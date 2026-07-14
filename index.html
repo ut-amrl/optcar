@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="OptCar adapts generalist forward kinodynamic models for high-speed model predictive control across changing terrains."
+    />
+    <meta name="theme-color" content="#ffffff" />
+    <meta property="og:title" content="OptCar — High-Speed MPC Across Terrains" />
+    <meta
+      property="og:description"
+      content="Specializing generalist vehicle models for accurate control without losing cross-terrain generalization."
+    />
+    <meta property="og:type" content="website" />
+
+    <title>OptCar — High-Speed MPC Across Terrains</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&amp;family=Manrope:wght@400;500;600;700;800&amp;display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+    <script src="script.js" defer></script>
+  </head>
+
+  <body>
+    <main>
+      <section class="landing" aria-label="OptCar project introduction">
+        <button class="research-toggle research-toggle-landing" type="button" aria-expanded="false" aria-controls="research-drawer">
+          <span class="sr-only">Open related research</span>
+          <i></i><i></i><i></i>
+        </button>
+
+        <div class="landing-crop">
+          <img src="assets/images/optcar_title.png" alt="OptCar driving across grass, vegetation, uneven terrain, and dirt" />
+        </div>
+
+        <header class="masthead shell">
+          <h1>OptCar</h1>
+          <p class="subtitle">
+            <span>Adapting Generalist Vehicle Models for</span>
+            <span>High-Speed MPC Across Terrains</span>
+          </p>
+
+          <div class="authors" aria-label="Authors">
+            <span><a href="https://rwik2000.com/">Rwik Rana</a><sup>1</sup></span>
+            <span><a href="https://www.linkedin.com/in/jessequattro/">Jesse Quattrociocchi</a><sup>1,2</sup></span>
+            <span><a href="https://autonomy.oden.utexas.edu/profiles/christian-c-ellis">Christian Ellis</a><sup>1,2</sup></span>
+            <span><a href="https://www.nathantsoi.com/">Nathan Tsoi</a><sup>1</sup></span>
+            <span><a href="https://scholar.google.com/citations?hl=en&amp;user=Ndp8dmgAAAAJ">Garrett Warnell</a><sup>1,2</sup></span>
+            <span><a href="https://www.joydeepb.com/">Joydeep Biswas</a><sup>1</sup></span>
+          </div>
+          <div class="affiliations">
+            <span><sup>1</sup>The University of Texas at Austin</span>
+            <span><sup>2</sup>DEVCOM Army Research Laboratory</span>
+          </div>
+          <div class="project-actions" aria-label="Project links">
+            <button type="button" disabled>arXiv <span>Coming soon</span></button>
+            <button type="button" disabled>Code <span>Coming soon</span></button>
+          </div>
+        </header>
+
+        <a class="scroll-cue" href="#content" aria-label="Continue to the abstract and videos">
+          <span aria-hidden="true">↓</span>
+        </a>
+      </section>
+
+      <aside class="project-bar" aria-label="Project information">
+        <div class="project-bar-inner shell">
+          <button class="research-toggle research-toggle-bar" type="button" aria-expanded="false" aria-controls="research-drawer">
+            <span class="sr-only">Open related research</span>
+            <i></i><i></i><i></i>
+          </button>
+          <div class="project-bar-copy">
+            <p class="project-bar-title">
+              <strong>OptCar</strong>
+              <span>Adapting Generalist Vehicle Models for High-Speed MPC Across Terrains</span>
+            </p>
+            <p class="project-bar-authors">
+              Rwik Rana · Jesse Quattrociocchi · Christian Ellis · Nathan Tsoi · Garrett Warnell · Joydeep Biswas
+            </p>
+          </div>
+          <div class="project-bar-right">
+            <div class="project-bar-actions" aria-label="Project links">
+              <button type="button" disabled>arXiv <span>Coming soon</span></button>
+              <button type="button" disabled>Code <span>Coming soon</span></button>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <div class="research-backdrop" data-research-close></div>
+      <aside class="research-drawer" id="research-drawer" aria-label="Related research" aria-hidden="true">
+        <div class="research-drawer-header">
+          <p>Related research</p>
+          <button class="research-close" type="button" data-research-close aria-label="Close related research">×</button>
+        </div>
+        <nav class="research-links" aria-label="Related research papers">
+          <a href="https://amrl.cs.utexas.edu/overseec/">
+            <strong>overseec</strong>
+            <span>Open-vocabulary costmap generation <b aria-hidden="true">↗</b></span>
+          </a>
+          <a href="https://amrl.cs.utexas.edu/bev-patch-pf/">
+            <strong>bevpatchpf</strong>
+            <span>Bird's-eye-view patch particle filtering <b aria-hidden="true">↗</b></span>
+          </a>
+        </nav>
+      </aside>
+
+      <section class="intro-grid shell" id="content">
+        <div class="video-column">
+          <p class="section-label">Videos</p>
+          <div class="video-stack" aria-label="OptCar experiment videos">
+            <figure>
+              <div class="video-player video-player-veg">
+                <video
+                  autoplay
+                  muted
+                  loop
+                  playsinline
+                  preload="auto"
+                  poster="assets/images/veg_dirt_env/rgb.png"
+                >
+                  <source src="assets/videos/Optcar_veg_dirt.mp4" type="video/mp4" />
+                </video>
+                <button class="video-fullscreen" type="button" aria-label="Play vegetation and dirt video in fullscreen">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M8 3H3v5M16 3h5v5M21 16v5h-5M3 16v5h5" />
+                  </svg>
+                </button>
+              </div>
+              <figcaption>
+                <strong>Vegetation + dirt</strong>
+                <span>High-speed tracking through changing slip regimes</span>
+              </figcaption>
+            </figure>
+
+            <figure>
+              <div class="video-player video-player-cart">
+                <video
+                  autoplay
+                  muted
+                  loop
+                  playsinline
+                  preload="auto"
+                  poster="assets/images/cart_pulling/cart_pulling.png"
+                >
+                  <source src="assets/videos/Optcar_cart_pulling.mp4" type="video/mp4" />
+                </video>
+                <button class="video-fullscreen" type="button" aria-label="Play cart pulling video in fullscreen">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M8 3H3v5M16 3h5v5M21 16v5h-5M3 16v5h5" />
+                  </svg>
+                </button>
+              </div>
+              <figcaption>
+                <strong>Cart pulling</strong>
+                <span>Closed-loop control under an unseen payload shift</span>
+              </figcaption>
+            </figure>
+          </div>
+        </div>
+
+        <div class="abstract-panel" id="abstract">
+          <p class="section-label">Abstract</p>
+          <div class="prose">
+          <h2>Precise for one vehicle. Robust across terrains.</h2>
+          <p>
+            High-speed off-road autonomy requires precise closed-loop control for a target vehicle while
+            remaining robust across changing terrains. Recent forward kinodynamic (FKD) prediction
+            foundation models suggest a promising path, starting from a generalist model and specializing
+            it to the target platform. However, effective specialization remains challenging, as it often
+            requires substantial real-world data, and models adapted to one setting can still overfit to
+            specific terrains or driving regimes.
+          </p>
+          <p>
+            We present <strong>OptCar</strong> (Optimized Car), a recipe for bridging the gap from
+            generalist to specialist FKD models that preserves cross-terrain generalization while optimizing
+            performance for a specific vehicle. OptCar introduces a history-conditioned dynamics adaptation
+            module that encodes recent state-action observations into a dynamics context token, and then
+            fine-tunes the generalist model using limited real-world data together with targeted synthetic
+            rollouts from environment-specific system identification.
+          </p>
+          <p>
+            In closed-loop model predictive control (MPC) experiments across three terrains and an
+            out-of-distribution cart-pulling task, the largest gains appear at 6 m/s, the highest speed
+            evaluated and the regime in which slip dominates tracking error. On vegetation and dirt, the
+            most slip-diverse terrain, OptCar reduces 6 m/s trajectory tracking error by roughly 55%
+            relative to a fine-tuned AnyCar baseline, and remains the most accurate even when an unseen
+            cart payload changes the dynamics. With only 5 minutes of real data per terrain, OptCar is
+            competitive on road with a specialist trained on 30 minutes of road data, and substantially
+            outperforms it once the terrain changes.
+          </p>
+          </div>
+        </div>
+      </section>
+
+      <section class="method shell" id="method">
+        <p class="section-label">OptCar method</p>
+        <figure class="pdf-figure pdf-method">
+          <a class="figure-link" href="assets/images/optcar_method.pdf" aria-label="Open the OptCar method figure as a PDF">
+            <img src="assets/images/optcar_method.png" alt="OptCar model architecture and fine-tuning method" />
+          </a>
+        </figure>
+
+        <div class="method-writeup">
+          <article>
+            <span>01</span>
+            <h2>History-conditioned FKD</h2>
+            <p>
+              A bidirectional transformer compresses the recent state-action history into a single context
+              vector that represents the active vehicle dynamics. This context conditions every block of
+              the causal FKD rollout decoder through FiLM. Given a candidate action sequence, the decoder
+              predicts future body-frame state increments for MPC without online optimization or an
+              explicit terrain classifier.
+            </p>
+          </article>
+          <article>
+            <span>02</span>
+            <h2>Targeted specialization</h2>
+            <p>
+              OptCar begins with large-scale simulation pretraining, then specializes to the target vehicle
+              using approximately five minutes of real driving per terrain. Each terrain log also calibrates
+              a dynamic bicycle model that generates targeted synthetic rollouts. Real observations anchor
+              the model to the physical platform, while synthetic trajectories expand coverage of the
+              aggressive, high-slip regimes that are difficult to collect safely.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section class="overview-section shell" aria-labelledby="overview-caption">
+        <p class="section-label">OptCar in closed loop</p>
+        <figure class="pdf-figure pdf-wide">
+          <a class="figure-link" href="assets/images/optcar_title.pdf" aria-label="Open the OptCar overview figure as a PDF">
+            <img src="assets/images/optcar_title.png" alt="OptCar overview across mixed terrain" />
+          </a>
+          <figcaption id="overview-caption">
+            OptCar combines targeted real-and-synthetic specialization with history-conditioned FKD
+            rollouts for sampling-based MPC across changing terrain.
+          </figcaption>
+        </figure>
+      </section>
+
+      <section class="platform shell" aria-labelledby="platform-heading">
+        <p class="section-label">Experimental platform</p>
+        <h2 id="platform-heading">UT AlphaTruck: Built for high-speed off-road autonomy.</h2>
+        <div class="platform-grid">
+          <figure class="pdf-figure pdf-platform">
+            <a class="figure-link" href="assets/images/platform.pdf" aria-label="Open the experimental platform figure as a PDF">
+              <img src="assets/images/platform.png" alt="UT AlphaTruck experimental platform and hardware" />
+            </a>
+          </figure>
+          <figure class="platform-photo">
+            <img src="assets/images/platform_2.png" alt="UT AlphaTruck with its protective frame" />
+          </figure>
+        </div>
+      </section>
+    </main>
+
+    <footer class="shell">
+      <p>
+        The research paper and accompanying figures are licensed under
+        <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>.
+      </p>
+      <p>Copyright © 2026 Rwik Rana et al. · SPDX-License-Identifier: CC-BY-4.0</p>
+    </footer>
+  </body>
+</html>
