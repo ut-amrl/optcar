@@ -426,14 +426,14 @@ body.has-entered-content .scroll-cue {
   margin: 18px 0 0;
   color: var(--ink);
   font-size: 0.95rem;
-  font-weight: 500;
+  font-weight: 600;
   text-align: center;
 }
 
 .authors {
   gap: 5px 18px;
-  font-size: 0.93rem;
-  font-weight: 700;
+  font-size: 0.95rem;
+  font-weight: 600;
 }
 
 .authors a {
@@ -781,7 +781,7 @@ footer a {
   }
 
   .venue-badge {
-    font-size: 0.82rem;
+    font-size: 0.8rem;
   }
 
   .citation pre {
