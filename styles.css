@@ -6,6 +6,8 @@
   --blue: #415dd8;
   --font-sans: "Manrope", sans-serif;
   --font-mono: "DM Mono", monospace;
+  --fs-base: clamp(1rem, 1.5vw, 1.35rem);
+  --fs-display: calc(var(--fs-base) * 2);
 }
 
 * {
@@ -298,20 +300,29 @@ body.research-open .research-drawer {
   text-transform: uppercase;
 }
 
+.title-lockup {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(16px, 2.5vw, 34px);
+  text-align: left;
+}
+
 .masthead h1 {
-  margin: 0 0 4px;
-  font-size: clamp(4rem, 10vw, 8rem);
-  letter-spacing: -0.08em;
-  line-height: 0.95;
+  margin: 0;
+  font-size: var(--fs-display);
+  letter-spacing: -0.05em;
+  line-height: 1;
 }
 
 .subtitle {
   max-width: 850px;
-  margin: 18px auto 30px;
-  font-size: clamp(1.25rem, 2.5vw, 2rem);
+  margin: 0;
+  font-size: var(--fs-base);
   font-weight: 600;
-  letter-spacing: -0.035em;
-  line-height: 1.25;
+  letter-spacing: -0.02em;
+  line-height: 1.3;
 }
 
 .subtitle span {
@@ -364,15 +375,15 @@ body.has-entered-content .scroll-cue {
 
 .pill {
   display: inline-flex;
-  min-height: 40px;
-  padding: 0 18px;
+  min-height: 2.6em;
+  padding: 0 1.1em;
   align-items: center;
   gap: 8px;
   border: 1.5px solid var(--ink);
   border-radius: 999px;
   background: var(--ink);
   color: var(--white);
-  font: 600 0.85rem var(--font-sans);
+  font: 600 var(--fs-base) var(--font-sans);
   text-decoration: none;
   transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
 }
@@ -425,14 +436,15 @@ body.has-entered-content .scroll-cue {
 .venue-badge {
   margin: 18px 0 0;
   color: var(--ink);
-  font-size: 0.95rem;
+  font-size: var(--fs-base);
   font-weight: 600;
   text-align: center;
 }
 
 .authors {
+  margin-top: 30px;
   gap: 5px 18px;
-  font-size: 0.95rem;
+  font-size: var(--fs-base);
   font-weight: 600;
 }
 
@@ -454,7 +466,8 @@ body.has-entered-content .scroll-cue {
   margin-top: 8px;
   gap: 5px 24px;
   color: var(--muted);
-  font-size: 0.8rem;
+  font-size: var(--fs-base);
+  font-weight: 400;
 }
 
 sup {
@@ -764,10 +777,10 @@ footer a {
     font-size: 0.58rem;
   }
 
-  .pill {
-    min-height: 36px;
-    padding: 0 14px;
-    font-size: 0.78rem;
+  .title-lockup {
+    flex-direction: column;
+    gap: 10px;
+    text-align: center;
   }
 
   .pill-sm {
@@ -778,10 +791,6 @@ footer a {
 
   .pill-sm span:not(.pill-icon) {
     display: none;
-  }
-
-  .venue-badge {
-    font-size: 0.8rem;
   }
 
   .citation pre {
