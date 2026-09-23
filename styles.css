@@ -278,7 +278,7 @@ body.research-open .research-drawer {
   gap: 10px;
 }
 
-.project-bar-actions button {
+.project-bar-actions a {
   display: inline-flex;
   min-height: 34px;
   padding: 0 12px;
@@ -286,20 +286,18 @@ body.research-open .research-drawer {
   gap: 7px;
   border: 1px solid var(--line);
   border-radius: 7px;
-  background: #f4f4f0;
-  color: #8a8c84;
+  background: var(--white);
+  color: var(--ink);
   font: 700 0.72rem var(--font-sans);
-  cursor: not-allowed;
+  text-decoration: none;
+  transition: border-color 0.18s ease, color 0.18s ease, background 0.18s ease;
 }
 
-.project-bar-actions button span {
-  padding-left: 7px;
-  border-left: 1px solid #d3d4cd;
-  font-family: var(--font-mono);
-  font-size: 0.56rem;
-  font-weight: 400;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
+.project-bar-actions a:hover,
+.project-bar-actions a:focus-visible {
+  border-color: var(--blue);
+  background: #f2f4ff;
+  color: var(--blue);
 }
 
 .shell {
@@ -384,28 +382,26 @@ body.has-entered-content .scroll-cue {
   gap: 10px;
 }
 
-.project-actions button {
+.project-actions a {
   display: inline-flex;
   min-height: 42px;
-  padding: 0 16px;
+  padding: 0 20px;
   align-items: center;
   gap: 9px;
   border: 1px solid var(--line);
   border-radius: 999px;
-  background: #f4f4f0;
-  color: #8a8c84;
+  background: var(--white);
+  color: var(--ink);
   font: 700 0.8rem var(--font-sans);
-  cursor: not-allowed;
+  text-decoration: none;
+  transition: border-color 0.18s ease, color 0.18s ease, background 0.18s ease;
 }
 
-.project-actions button span {
-  padding-left: 9px;
-  border-left: 1px solid #d3d4cd;
-  font-family: var(--font-mono);
-  font-size: 0.62rem;
-  font-weight: 400;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
+.project-actions a:hover,
+.project-actions a:focus-visible {
+  border-color: var(--blue);
+  background: #f2f4ff;
+  color: var(--blue);
 }
 
 .authors {
@@ -653,6 +649,34 @@ figure {
   height: auto;
 }
 
+.citation {
+  padding-top: clamp(80px, 9vw, 120px);
+}
+
+.citation h2 {
+  margin: 0 0 20px;
+  font-size: clamp(1.4rem, 2.4vw, 1.9rem);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.citation pre {
+  margin: 0;
+  padding: 22px 24px;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #f7f7f3;
+}
+
+.citation code {
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  line-height: 1.7;
+  white-space: pre;
+}
+
 footer {
   margin-top: 110px;
   padding: 28px 0 44px;
@@ -714,14 +738,15 @@ footer a {
     font-size: 0.58rem;
   }
 
-  .project-bar-actions button {
+  .project-bar-actions a {
     min-height: 32px;
     padding: 0 8px;
     font-size: 0.65rem;
   }
 
-  .project-bar-actions button span {
-    display: none;
+  .citation pre {
+    padding: 16px;
+    font-size: 0.66rem;
   }
 
 
