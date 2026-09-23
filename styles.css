@@ -278,27 +278,6 @@ body.research-open .research-drawer {
   gap: 10px;
 }
 
-.project-bar-actions a {
-  display: inline-flex;
-  min-height: 34px;
-  padding: 0 12px;
-  align-items: center;
-  gap: 7px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--white);
-  color: var(--ink);
-  font: 700 0.72rem var(--font-sans);
-  text-decoration: none;
-  transition: border-color 0.18s ease, color 0.18s ease, background 0.18s ease;
-}
-
-.project-bar-actions a:hover,
-.project-bar-actions a:focus-visible {
-  border-color: var(--blue);
-  background: #f2f4ff;
-  color: var(--blue);
-}
 
 .shell {
   width: min(1180px, calc(100% - 40px));
@@ -377,31 +356,78 @@ body.has-entered-content .scroll-cue {
 
 .project-actions {
   display: flex;
+  flex-wrap: wrap;
   margin-top: 24px;
   justify-content: center;
   gap: 10px;
 }
 
-.project-actions a {
+.pill {
   display: inline-flex;
-  min-height: 42px;
-  padding: 0 20px;
+  min-height: 40px;
+  padding: 0 18px;
   align-items: center;
-  gap: 9px;
-  border: 1px solid var(--line);
+  gap: 8px;
+  border: 1.5px solid var(--ink);
   border-radius: 999px;
-  background: var(--white);
-  color: var(--ink);
-  font: 700 0.8rem var(--font-sans);
+  background: var(--ink);
+  color: var(--white);
+  font: 600 0.85rem var(--font-sans);
   text-decoration: none;
-  transition: border-color 0.18s ease, color 0.18s ease, background 0.18s ease;
+  transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
 }
 
-.project-actions a:hover,
-.project-actions a:focus-visible {
-  border-color: var(--blue);
-  background: #f2f4ff;
-  color: var(--blue);
+.pill:hover,
+.pill:focus-visible {
+  background: #34372f;
+  border-color: #34372f;
+}
+
+.pill-cite {
+  background: var(--white);
+  color: var(--ink);
+}
+
+.pill-cite:hover,
+.pill-cite:focus-visible {
+  background: #f0f0ec;
+  border-color: var(--ink);
+  color: var(--ink);
+}
+
+.pill-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.05em;
+  line-height: 1;
+}
+
+.pill-quote {
+  margin-right: -2px;
+  font-size: 1.9em;
+  line-height: 0;
+  transform: translateY(0.3em);
+}
+
+.pill-sm {
+  min-height: 32px;
+  padding: 0 13px;
+  gap: 6px;
+  border-width: 1.2px;
+  font-size: 0.73rem;
+}
+
+.pill-sm .pill-quote {
+  font-size: 1.7em;
+}
+
+.venue-badge {
+  margin: 18px 0 0;
+  color: var(--ink);
+  font-size: 0.95rem;
+  font-weight: 500;
+  text-align: center;
 }
 
 .authors {
@@ -738,10 +764,24 @@ footer a {
     font-size: 0.58rem;
   }
 
-  .project-bar-actions a {
-    min-height: 32px;
-    padding: 0 8px;
+  .pill {
+    min-height: 36px;
+    padding: 0 14px;
+    font-size: 0.78rem;
+  }
+
+  .pill-sm {
+    min-height: 30px;
+    padding: 0 9px;
     font-size: 0.65rem;
+  }
+
+  .pill-sm span:not(.pill-icon) {
+    display: none;
+  }
+
+  .venue-badge {
+    font-size: 0.82rem;
   }
 
   .citation pre {
