@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OptCar · Dynamics workbench</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<header>
+  <div class="brand"><span class="mark">O</span><div><strong>OptCar</strong><small>DYNAMICS WORKBENCH</small></div></div>
+  <nav aria-label="Workbench tabs"><button id="tab-dbm" class="tab active">01 <span>DBM calibration</span></button><button id="tab-model" class="tab">02 <span>Transformer evaluation</span></button></nav>
+  <span class="local-badge"><i></i> OFFLINE WORKSPACE</span>
+</header>
+<div class="workspace">
+<aside>
+  <section>
+    <div class="section-heading"><span class="eyebrow">INPUT</span><span id="bag-state" class="muted">No recording loaded</span></div>
+    <h2>Load a recording</h2>
+    <label>ROS2 bag path<input id="bag-path" placeholder="/path/to/ros2_bag or recording.mcap"></label>
+    <button id="inspect-topics" class="secondary wide">Inspect topics</button><pre id="topics" class="topic-list" hidden></pre>
+    <div class="two"><label>Terrain<input id="terrain" value="road"></label><label>Dataset split<select id="split"><option value="train">Training</option><option value="val">Validation</option><option value="test">Test</option></select></label></div>
+    <details><summary>Topics & timing</summary>
+      <label>Pose topic<input id="pose-topic" value="/odometry" list="topic-options"></label>
+      <label>Twist topic<input id="twist-topic" value="/odometry" list="topic-options"></label>
+      <label>Command topic<input id="command-topic" value="/cmd_vel" list="topic-options"></label><datalist id="topic-options"></datalist>
+      <div class="two"><label>Twist frame<select id="twist-frame"><option value="body">Body</option><option value="world">World</option></select></label><label>Command format<select id="command-type"><option value="twist_steering">Twist: z = steering</option><option value="ackermann">Ackermann</option></select></label></div>
+      <div class="two"><label>Timestep (s)<input id="dt" type="number" value="0.02" min="0.001" step="0.005"></label><label>Max topic gap (s)<input id="max-gap" type="number" value="0.2" min="0.001" step="0.02"></label></div>
+      <div class="two"><label>Command delay (s)<input id="command-shift" type="number" value="0" step="0.02"></label><label>Timestamp<select id="timestamp-source"><option value="bag">Bag time</option><option value="header">Header time</option></select></label></div>
+      <p class="hint">Positive delay applies commands later. Twist angular.z is interpreted as a steering angle in radians.</p>
+    </details>
+    <button id="load-bag" class="primary wide">Load trajectory <span>↗</span></button>
+    <label id="segment-label" hidden>Continuous segment<select id="segment"></select></label>
+  </section>
+  <div id="dbm-controls">
+    <section>
+      <div class="section-heading"><span class="eyebrow">PHYSICS</span><span class="tag">TORCH DBM</span></div>
+      <h2>Vehicle parameters</h2>
+      <div class="two"><button id="load-preset" class="secondary">Load terrain preset</button><button id="save-preset" class="secondary">Save preset</button></div>
+      <div id="params" class="parameter-grid"></div>
+      <label>Initial wheel speed (m/s)<input id="wheel-speed" type="number" step="0.1" placeholder="Estimate from recorded command history"></label>
+      <button id="run-dbm" class="primary wide">Preview DBM rollout</button>
+    </section>
+    <section>
+      <span class="eyebrow">IDENTIFICATION</span><h2>Fit to observed motion</h2>
+      <p class="hint">Fit on a training recording, then load a held-out recording to evaluate the saved preset.</p>
+      <div class="two"><label>First sample<input id="fit-start" type="number" min="0" value="0"></label><label>Last sample<input id="fit-end" type="number" min="3" value="499"></label></div>
+      <details><summary>Parameters to fit</summary><div id="fit-keys" class="check-list"></div></details>
+      <button id="fit" class="secondary wide">Fit DBM parameters</button>
+    </section>
+    <section>
+      <span class="eyebrow">DATA COLLECTION</span><h2>Build terrain datasets</h2>
+      <label>Run name<input id="run-name" value="default"></label>
+      <div class="two"><label>History steps<input id="history-steps" type="number" value="250" min="2"></label><label>Future steps<input id="future-steps" type="number" value="50" min="1"></label></div>
+      <label>Window stride<input id="stride" type="number" value="10" min="1"></label>
+      <button id="export" class="secondary wide">Export recording to real data</button>
+      <details open><summary>Synthetic collection</summary>
+        <div class="two"><label>Episodes<input id="episodes" type="number" value="1000" min="1"></label><label>Batch size<input id="batch-size" type="number" value="128" min="1"></label></div>
+        <div class="two"><label>Duration (s)<input id="duration" type="number" value="10" min="0.02" step="1"></label><label>Device<select id="device"><option>cpu</option><option>cuda</option></select></label></div>
+        <div class="two"><label>Velocity min (m/s)<input id="velocity-min" type="number" value="-2" step="0.1"></label><label>Velocity max (m/s)<input id="velocity-max" type="number" value="5" step="0.1"></label></div>
+        <div class="two"><label>Steering min (rad)<input id="steering-min" type="number" value="-0.5" step="0.05"></label><label>Steering max (rad)<input id="steering-max" type="number" value="0.5" step="0.05"></label></div>
+        <div class="two"><label>Velocity noise σ<input id="velocity-noise" type="number" value="0.2" min="0" step="0.05"></label><label>Steering noise σ<input id="steering-noise" type="number" value="0" min="0" step="0.01"></label></div>
+        <div class="two"><label>Base seed<input id="seed" type="number" value="42" min="0"></label><label>Parameter variation<input id="variation" type="number" value="0" min="0" max="0.99" step="0.05"></label></div>
+        <p class="hint">Bézier velocity · random-walk steering. Save a terrain preset before generating. Use a new run name when changing the preset or collection settings.</p>
+        <button id="generate" class="primary wide">Generate synthetic data</button>
+      </details>
+    </section>
+  </div>
+  <div id="model-controls" hidden>
+    <section><span class="eyebrow">LEARNED DYNAMICS</span><h2>Load a transformer</h2>
+      <label>Checkpoint path<input id="checkpoint" placeholder="checkpoints/film_specialist/specialist_best.ckpt"></label>
+      <button id="inspect-checkpoint" class="secondary wide">Load checkpoint details</button>
+      <div id="checkpoint-info" class="checkpoint-info muted">FiLM and cross-attention checkpoints supported.</div>
+      <label>Inference device<select id="predict-device"><option>cpu</option><option>cuda</option></select></label>
+      <button id="predict" class="primary wide">Predict trajectory</button>
+      <p class="hint">Predictions use observed history and recorded future commands. The selected start needs enough history for this checkpoint.</p>
+    </section>
+  </div>
+</aside>
+<main>
+  <div class="view-heading"><div><span class="eyebrow">TRAJECTORY EXPLORER</span><h1 id="view-title">Understand the dynamics.</h1></div><button id="reset-view" class="secondary">Reset view</button></div>
+  <div class="metrics"><div><span>Position RMSE</span><strong id="metric-position">—</strong><small>meters</small></div><div><span>Heading MAE</span><strong id="metric-heading">—</strong><small>degrees</small></div><div><span>Final position error</span><strong id="metric-final">—</strong><small>meters</small></div><div><span>Recording</span><strong id="metric-duration">—</strong><small>seconds · selected segment</small></div></div>
+  <div class="trajectory-panel"><div class="plot-heading"><span>World trajectory <small>meters</small></span><div class="legend"><span class="recording">Recording</span><span class="measured">Measured future</span><span class="predicted">Prediction</span></div></div><canvas id="trajectory" aria-label="World trajectory and predicted rollout"></canvas><div id="empty-view"><div class="empty-orbit">↗</div><h3>A recording is your starting point.</h3><p>Load a ROS2 bag to explore motion and compare predictions.</p></div><div class="plot-footer">Scroll to zoom · drag to pan<span id="frame-info">No frame selected</span></div></div>
+  <div class="transport"><button id="play" class="secondary" aria-label="Play recording">▶</button><input id="frame" aria-label="Current sample" type="range" min="0" max="1" value="0"><label>Sample<input id="current" type="number" min="0" value="249"></label><label>Horizon<input id="horizon" type="number" min="1" value="50"></label><button id="preview" class="primary">Preview</button></div>
+  <div class="signal-panels"><div><div class="plot-heading">Velocity <small>m/s · measured / commanded</small></div><canvas id="velocity"></canvas></div><div><div class="plot-heading">Steering & yaw rate <small>rad / rad/s</small></div><canvas id="steering"></canvas></div></div>
+  <section class="dataset-section"><div class="section-heading"><div><span class="eyebrow">DATA LIBRARY</span><h2>Terrain collections</h2></div><button id="refresh-data" class="secondary">Refresh</button></div><div id="dataset-tree" class="dataset-tree">No generated collections yet.</div></section>
+  <div id="jobs" class="jobs"></div>
+  <div id="status" role="status">Ready. Load a recording or generate synthetic data from a saved terrain preset.</div>
+</main>
+</div>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

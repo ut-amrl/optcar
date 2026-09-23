@@ -1,0 +1,20 @@
+data:
+  history_steps: 250
+  future_steps: 50
+  dt: 0.02
+  stride: 10
+  shard_windows: 1024
+commands:
+  duration: 10.0
+  action_bounds: [[-2.0, 5.0], [-0.5, 0.5]]
+  noise_std: [0.2, 0.0]
+  curve_methods: [[bezier], [random_walk]]
+  offset_fraction: 0.0
+  seed: 42
+  initial_velocity: [0.0, 0.0]
+  initial_yaw: [0.0, 0.0]
+  parameter_randomization: 0.0
+episodes: 1000
+batch_size: 128
+device: cpu
+fractions: [0.8, 0.1, 0.1]

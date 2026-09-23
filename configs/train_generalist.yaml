@@ -1,0 +1,30 @@
+data:
+  history_steps: 250
+  future_steps: 50
+  dt: 0.02
+model:
+  architecture: film
+  history_steps: 250
+  future_steps: 50
+  embed_dim: 64
+  heads: 4
+  history_layers: 2
+  decoder_layers: 2
+  feedforward_dim: 256
+  dropout: 0.1
+training:
+  stage: generalist
+  datasets: [datasets/generalist_dataset]
+  output: checkpoints/film_generalist
+  epochs: 500
+  batch_size: 256
+  learning_rate: 0.001
+  weight_decay: 0.01
+  warmup_epochs: 10
+  gradient_clip: 1.0
+  workers: 0
+  device: cpu
+  seed: 42
+  normalization_samples: 10000
+  position_weight: 1.0
+  quaternion_weight: 0.3

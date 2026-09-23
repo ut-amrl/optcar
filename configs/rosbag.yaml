@@ -1,0 +1,12 @@
+# PoseStamped, PoseWithCovarianceStamped, or Odometry for pose;
+# TwistStamped, TwistWithCovarianceStamped, Twist, or Odometry for twist.
+pose_topic: /odometry
+twist_topic: /odometry
+command_topic: /cmd_vel
+twist_frame: body
+# twist_steering: linear.x is m/s; angular.z is steering radians, NOT yaw rate.
+# ackermann: speed and steering_angle in AckermannDrive[Stamped].
+command_type: twist_steering
+command_shift_s: 0.0
+max_gap_s: 0.2
+timestamp_source: bag

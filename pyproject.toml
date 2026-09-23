@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "optcar"
+version = "0.1.0"
+description = "Torch vehicle dynamics data generation, learning, and visualization"
+requires-python = ">=3.10"
+dependencies = ["torch>=2.1", "numpy>=1.24", "PyYAML>=6", "scipy>=1.10", "flask>=3"]
+
+[project.optional-dependencies]
+ros = ["rosbags>=0.11"]
+
+[project.scripts]
+optcar = "optcar.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["optcar*"]
+
+[tool.setuptools.package-data]
+"optcar.gui" = ["templates/*.html", "static/*.css", "static/*.js"]
