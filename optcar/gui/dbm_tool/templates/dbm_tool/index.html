@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>DBM Parameter Estimator</title>
+<script src="/dbm/static/plotly-2.35.2.min.js"></script>
+<link rel="stylesheet" href="/dbm/static/style.css" />
+<link rel="stylesheet" href="/static/bin_explorer.css" />
+</head>
+<body>
+<header>
+  <h1>DBM Parameter Estimator</h1>
+  <span class="muted">Raw bins · manual parameter tuning · recorded commands</span>
+</header>
+
+<div id="dbm-library-layout">
+<aside id="dbm-browser" aria-label="DBM bin folder browser">
+  <span class="eyebrow">BIN LIBRARY</span><h2>Browse your raw bins.</h2>
+  <label for="dataset_path">Folder or .bin file</label>
+    <input type="text" id="dataset_path"
+           placeholder="path to dataset root (contains data/*.bin) or to a .bin"
+           value="{{ initial_path }}" />
+  <button id="btn_inspect">Open folder ↗</button>
+  <label for="dbm-bin-filter">Filter files</label><input id="dbm-bin-filter" type="text" placeholder="Folder or bin name" />
+  <div class="browser-heading"><span id="dbm-bin-count" class="muted">No folder open</span><button id="dbm-bin-collapse" class="secondary" type="button">Collapse folders</button></div>
+  <div id="dbm-bin-tree" class="bin-tree" aria-label="DBM bin files">Open a folder to browse its bins.</div>
+  <div id="inspect_status" class="status" role="status"></div>
+</aside>
+<main id="dbm-library-main">
+<div class="browser-heading"><span id="dbm-recording" class="muted">Choose a raw bin from the folder browser.</span><button id="dbm-toggle-browser" class="secondary" type="button" aria-expanded="true" aria-controls="dbm-browser">Hide browser</button></div>
+<div id="load_status" class="status" role="status"></div>
+<div id="bag_page">
+<section class="card hidden" id="view_card">
+    <div class="tabs">
+    <button class="tab active" id="tab_traj" type="button">Bag XY</button>
+    <button class="tab" id="tab_dbm" type="button">DBM Window</button>
+  </div>
+
+  <div id="traj_tab_panel" class="tab-panel">
+    <div class="traj-layout">
+      <aside class="traj-sidebar">
+        <div class="params-title">Reference Trajectory</div>
+        <label>Type</label>
+        <select id="ref_traj_select"></select>
+        <label for="ref_traj_color">Color</label>
+        <input type="color" id="ref_traj_color" value="#f59e0b" />
+        <div id="ref_params" class="ref-param-grid"></div>
+        <button id="btn_load_ref_traj" type="button">Load</button>
+        <button id="btn_clear_ref_traj" type="button" class="secondary">Clear</button>
+        <div id="ref_traj_status" class="status"></div>
+      </aside>
+      <main class="traj-main">
+        <div class="row">
+          <label for="traj_start_slider">Start</label>
+        <input type="range" id="traj_start_slider" min="0" max="0" value="0" style="flex:1" />
+          <input type="number" id="traj_start_input" value="0" style="width:90px" />
+          <label for="traj_end_slider">End</label>
+        <input type="range" id="traj_end_slider" min="0" max="0" value="0" style="flex:1" />
+          <input type="number" id="traj_end_input" value="0" style="width:90px" />
+        </div>
+        <div class="row">
+          <span id="traj_info" class="muted"></span>
+          <button id="btn_save_segment" type="button">Save Segment</button>
+          <button id="btn_load_segment" type="button" class="secondary">Load Saved</button>
+          <span id="segment_status" class="status"></span>
+        </div>
+        <div id="bag_xy_plot" class="plot whole-xy"></div>
+      </main>
+    </div>
+  </div>
+
+  <div id="dbm_tab_panel" class="tab-panel hidden">
+  <div class="row">
+    <label for="frame_slider">Frame</label>
+        <input type="range" id="frame_slider" min="0" max="0" value="0" style="flex:1" />
+    <input type="number" id="frame_input" value="0" style="width:90px" />
+    <span id="frame_info" class="muted"></span>
+  </div>
+  <div class="row">
+    <label for="horizon">Horizon (steps)</label>
+        <input type="number" id="horizon" value="100" min="1" />
+    <label>cmd_vel shift (s) <span class="muted">+ = delay cmd</span></label>
+    <input type="number" id="cmd_shift" value="0.0" step="0.005" style="width:90px" />
+    <button id="btn_refresh">Refresh</button>
+  </div>
+  <div class="plots">
+    <div id="xy_plot" class="plot xy"></div>
+    <div class="plot-col">
+      <div id="vel_plot" class="plot"></div>
+      <div id="steer_plot" class="plot"></div>
+    </div>
+    <div class="params-panel">
+      <div class="params-title">DBM Parameters</div>
+      <label>Terrain preset<input id="preset_terrain" value="road" type="text"></label>
+      <div class="row"><button id="load_dbm_preset" type="button" class="secondary">Load preset</button><button id="save_dbm_preset" type="button" class="secondary">Save preset</button></div>
+      <div id="preset_status" class="status"></div>
+      <div class="param-grid">
+        <label for="p_len_f">len_f (m)</label>
+        <input type="number" id="p_len_f" value="{{ params.len_f }}" step="0.001" />
+        <label for="p_len_r">len_r (m)</label>
+        <input type="number" id="p_len_r" value="{{ params.len_r }}" step="0.001" />
+        <label for="p_mass">mass (kg)</label>
+        <input type="number" id="p_mass" value="{{ params.mass }}" step="0.1" />
+        <label for="p_inertia">inertia (kg m^2)</label>
+        <input type="number" id="p_inertia" value="{{ params.inertia }}" step="0.001" />
+        <label for="p_max_steer">max_steer (rad)</label>
+        <input type="number" id="p_max_steer" value="{{ params.max_steering_angle }}" step="0.01" />
+        <label for="p_C_tire_f">C_tire_f</label>
+        <input type="number" id="p_C_tire_f" value="{{ params.C_tire_f }}" step="1.0" />
+        <label for="p_C_tire_r">C_tire_r</label>
+        <input type="number" id="p_C_tire_r" value="{{ params.C_tire_r }}" step="1.0" />
+        <label for="p_C_throttle_a">C_throttle_a</label>
+        <input type="number" id="p_C_throttle_a" value="{{ params.C_throttle_a }}" step="0.1" />
+        <label for="p_C_rollf">C_rollf</label>
+        <input type="number" id="p_C_rollf" value="{{ params.C_rollf }}" step="0.1" />
+        <label for="p_C_drag">C_drag</label>
+        <input type="number" id="p_C_drag" value="{{ params.C_drag }}" step="0.01" />
+        <label for="p_wheel_tau">wheel_tau (s)</label>
+        <input type="number" id="p_wheel_tau" value="{{ params.wheel_time_constant }}" step="0.01" />
+        <label for="p_min_wheel">min_wheel (m/s)</label>
+        <input type="number" id="p_min_wheel" value="{{ params.min_wheel_velocity }}" step="0.5" />
+        <label for="p_max_wheel">max_wheel (m/s)</label>
+        <input type="number" id="p_max_wheel" value="{{ params.max_wheel_velocity }}" step="0.5" />
+      </div>
+      <button id="btn_rollout" style="width:100%; margin-top:12px;">Set &amp; Rollout</button>
+      <div id="rollout_status" class="status"></div>
+    </div>
+  </div>
+  </div>
+</section>
+</div>
+
+<!-- Retained from the copied WheeledLab tool; aggregate controls are not exposed. -->
+<section class="card hidden" id="aggregate_page">
+  <h2>Aggregate</h2>
+  <div class="aggregate-config-bar">
+    <label for="aggregate_config_path">Config</label>
+        <input type="text" id="aggregate_config_path"
+           value="{{ config_path }}" />
+    <button id="btn_save_aggregate_config" type="button">Save Current Config</button>
+    <button id="btn_load_aggregate_config" type="button" class="secondary">Load Config</button>
+    <span id="aggregate_config_status" class="status"></span>
+  </div>
+  <div class="aggregate-layout">
+    <aside class="traj-sidebar aggregate-segments">
+      <div class="params-title">Segments</div>
+      <div class="aggregate-grid aggregate-grid-head">
+        <span>YAML</span>
+        <span>Legend</span>
+        <span>Color</span>
+        <span>Width</span>
+        <span>Plot</span>
+        <span></span>
+      </div>
+      <div id="aggregate_rows" class="aggregate-rows"></div>
+      <button id="btn_add_aggregate_row" type="button" class="secondary">Add Row</button>
+      <button id="btn_load_aggregate" type="button">Load</button>
+      <button id="btn_clear_aggregate" type="button" class="secondary">Clear</button>
+      <div id="aggregate_status" class="status"></div>
+      <div class="aggregate-limits">
+        <div class="params-title">Plot Limits</div>
+        <label>-X
+          <input type="number" id="agg_limit_x_min" step="any" placeholder="auto" />
+        </label>
+        <label>+X
+          <input type="number" id="agg_limit_x_max" step="any" placeholder="auto" />
+        </label>
+        <label>-Y
+          <input type="number" id="agg_limit_y_min" step="any" placeholder="auto" />
+        </label>
+        <label>+Y
+          <input type="number" id="agg_limit_y_max" step="any" placeholder="auto" />
+        </label>
+      </div>
+      <div class="aggregate-display-options">
+        <div class="params-title">Display</div>
+        <label class="aggregate-display-master"><input type="checkbox" id="agg_show_all_display" checked /> All</label>
+        <label><input type="checkbox" id="agg_show_grid" checked /> Grid</label>
+        <label><input type="checkbox" id="agg_show_axis_labels" checked /> X/Y labels</label>
+        <label><input type="checkbox" id="agg_show_axes" checked /> Axes</label>
+        <label><input type="checkbox" id="agg_show_tick_labels" checked /> Numbers</label>
+        <label><input type="checkbox" id="agg_show_heading" checked /> Heading</label>
+        <label><input type="checkbox" id="agg_show_legend" checked /> Legend</label>
+      </div>
+    </aside>
+
+    <aside class="traj-sidebar">
+      <div class="params-title">Reference Trajectory</div>
+      <label>Type</label>
+      <select id="agg_ref_traj_select"></select>
+      <label for="agg_ref_traj_color">Color</label>
+        <input type="color" id="agg_ref_traj_color" value="#f59e0b" />
+      <div id="agg_ref_params" class="ref-param-grid"></div>
+      <button id="btn_load_agg_ref_traj" type="button">Load</button>
+      <button id="btn_clear_agg_ref_traj" type="button" class="secondary">Clear</button>
+      <div id="agg_ref_traj_status" class="status"></div>
+    </aside>
+
+    <main class="traj-main">
+      <div id="aggregate_xy_plot" class="plot whole-xy"></div>
+      <section class="aggregate-error-panel">
+        <div class="params-title">Trajectory Tracking Error</div>
+        <div id="aggregate_error_table" class="aggregate-error-table"></div>
+      </section>
+    </main>
+  </div>
+</section>
+
+</main>
+</div>
+
+<div id="loader" class="loader hidden"><div class="spinner"></div><div id="loader_msg">Loading...</div></div>
+
+<script src="/static/bin_explorer.js"></script>
+<script src="/dbm/static/app.js"></script>
+</body>
+</html>

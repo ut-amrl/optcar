@@ -1,0 +1,8 @@
+name: optcar
+channels:
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+# Install CPU Torch first, then requirements.txt and the editable package.
+# scripts/setup_env.sh performs these steps without downloading CUDA packages.

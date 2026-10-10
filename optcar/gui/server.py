@@ -13,6 +13,8 @@ import torch
 
 from optcar.dataset import DataConfig
 from optcar.datagen.rosbag_to_dataset import BagConfig, export_bag, load_bag, topics
+from optcar.datagen.raw_bins import scan_bins, inspect_bin, bin_frame, action_window
+from optcar.datagen.raw_bags import RawBagConfig, convert_raw_bags, discover_bags
 from optcar.datagen.dbm_to_dataset import CommandConfig, generate
 from optcar.models.dbm_calibration import DEFAULT_FIT_KEYS, fit_parameters, wheel_history
 from optcar.models.dynamic_bicycle import DBMParams, DynamicBicycleModel
@@ -21,10 +23,13 @@ from optcar.utils.file_io import read_config, safe_name, terrain_path, write_yam
 from optcar.utils.math import qinverse_torch, qrotate_torch, yaw_from_quat_torch
 
 
-def create_app(dataset_root="datasets"):
+def create_app(dataset_root="datasets", bag_root=None):
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024
+    from optcar.gui.dbm_tool.server import app as dbm_tool
+    app.register_blueprint(dbm_tool, url_prefix="/dbm")
     root = Path(dataset_root).expanduser().resolve()
+    app.config["DBM_CONFIG_ROOT"] = str(root / "dbm")
     (root / "generalist_dataset").mkdir(parents=True, exist_ok=True)
     sessions, jobs = {}, {}
     lock = threading.RLock()
@@ -76,7 +81,7 @@ def create_app(dataset_root="datasets"):
             try:
                 result = operation(progress, cancelled)
                 with lock:
-                    jobs[identifier].update(status="cancelled" if cancelled() else "complete", result=result)
+                    jobs[identifier].update(status="cancelled" if cancelled() else "partial" if result.get("failed", 0) else "complete", result=result)
             except Exception as exc:
                 app.logger.exception("OptCar job failed")
                 with lock:
@@ -88,11 +93,56 @@ def create_app(dataset_root="datasets"):
     def index():
         return render_template("index.html")
 
+    @app.post("/api/raw-bags/scan")
+    @api
+    def scan_raw_bags():
+        return discover_bags(request.get_json()["root"])
+
+    @app.post("/api/raw-bags/convert")
+    @api
+    def convert_raw():
+        payload = request.get_json()
+        config = RawBagConfig(**payload.get("config", {}))
+        bags = payload.get("bags")
+        if not isinstance(bags, list) or not bags:
+            raise ValueError("Select at least one bag")
+        return start_job(lambda progress, cancelled: convert_raw_bags(payload["root"], bags,
+            payload.get("output") or None, config, bool(payload.get("overwrite", False)), progress, cancelled))
+
+    def bin_options(payload):
+        return {key: payload[key] for key in ("dt", "columns", "num_envs", "env_index")
+                if payload.get(key) is not None}
+
+    @app.post("/api/raw-bins/scan")
+    @api
+    def scan_raw_bins():
+        payload = request.get_json()
+        return scan_bins(payload["path"], **bin_options(payload))
+
+    @app.post("/api/raw-bins/open")
+    @api
+    def open_raw_bin():
+        payload = request.get_json()
+        return inspect_bin(payload["path"], **bin_options(payload))
+
+    @app.post("/api/raw-bins/frame")
+    @api
+    def raw_bin_frame():
+        payload = request.get_json()
+        return bin_frame(payload["path"], payload["index"], **bin_options(payload))
+
+    @app.post("/api/raw-bins/actions")
+    @api
+    def raw_bin_actions():
+        payload = request.get_json()
+        return action_window(payload["path"], payload["index"], payload["before_s"], payload["after_s"], **bin_options(payload))
+
     @app.get("/api/defaults")
     @api
     def defaults():
         return {"params": asdict(DBMParams()), "data": asdict(DataConfig()), "commands": asdict(CommandConfig()),
-                "bag": asdict(BagConfig()), "fit_keys": DEFAULT_FIT_KEYS, "dataset_root": str(root)}
+                "bag": asdict(BagConfig()), "fit_keys": DEFAULT_FIT_KEYS, "dataset_root": str(root),
+                "raw_bag": asdict(RawBagConfig()), "raw_root": str(bag_root or "")}
 
     @app.post("/api/topics")
     @api

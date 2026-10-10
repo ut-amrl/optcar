@@ -1,0 +1,10 @@
+dt: 0.02
+pose_topic: /super_odometry/pose
+twist_topic: /super_odometry/twist_wf
+command_topic: /cmd_vel
+twist_frame: world
+command_type: twist_steering
+action_shift: 0.0
+max_duration: null
+include_cmd_vel: false
+aux_twist_topic: /super_odometry/twist

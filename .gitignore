@@ -8,3 +8,5 @@ datasets/
 checkpoints/
 *.ckpt
 *.bin
+work/
+.pytest_cache/

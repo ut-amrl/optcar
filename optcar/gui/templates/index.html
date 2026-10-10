@@ -4,14 +4,103 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>OptCar · Dynamics workbench</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='bin_explorer.css') }}">
 </head>
 <body>
 <header>
   <div class="brand"><span class="mark">O</span><div><strong>OptCar</strong><small>DYNAMICS WORKBENCH</small></div></div>
-  <nav aria-label="Workbench tabs"><button id="tab-dbm" class="tab active">01 <span>DBM calibration</span></button><button id="tab-model" class="tab">02 <span>Transformer evaluation</span></button></nav>
+  <nav aria-label="Workbench tabs"><button id="tab-raw" class="tab active">01 <span>ROS2 bags → bins</span></button><button id="tab-bins" class="tab">02 <span>Raw bin viewer</span></button><button id="tab-dbm" class="tab">03 <span>DBM calibration</span></button><button id="tab-model" class="tab">04 <span>Transformer evaluation</span></button></nav>
   <span class="local-badge"><i></i> OFFLINE WORKSPACE</span>
 </header>
-<div class="workspace">
+<div id="raw-workspace" class="workspace raw-workspace">
+<aside>
+  <section><span class="eyebrow">RAW DATA</span><h2>Find your recordings.</h2>
+    <label>Folder containing ROS2 bags<input id="raw-root" placeholder="/path/to/rosbags/corl26"></label>
+    <button id="raw-scan" class="primary wide">Scan folder <span>↗</span></button>
+    <p class="hint">Finds bags inside nested folders. Review metadata and choose the recordings to convert.</p>
+    <label>Output folder<input id="raw-output" placeholder="Defaults to the parent folder / bins"></label>
+    <p class="hint" id="raw-output-preview">Folder structure is preserved inside output/data. Each bag becomes one raw .bin.</p>
+  </section>
+  <section><span class="eyebrow">CONVERSION SETTINGS</span><h2>Align the recorded topics.</h2>
+    <label>Pose topic<input id="raw-pose" value="/super_odometry/pose"></label>
+    <label>Velocity topic<input id="raw-twist" value="/super_odometry/twist_wf"></label>
+    <label>Command topic<input id="raw-command" value="/cmd_vel"></label>
+    <details><summary>Auxiliary data</summary><label>Body velocity topic<input id="raw-aux-twist" value="/super_odometry/twist" placeholder="Leave blank to disable"></label><p class="hint">Save the recorded body twist in a separate auxiliary bin, aligned with the main bin. Missing auxiliary data does not block conversion.</p></details>
+    <div class="two"><label>Velocity frame<select id="raw-frame"><option value="world">World</option><option value="body">Body</option></select></label><label>Command format<select id="raw-command-type"><option value="twist_steering">Twist: z = steering</option><option value="ackermann">Ackermann</option></select></label></div>
+    <div class="two"><label>Timestep (s)<input id="raw-dt" type="number" min="0.001" step="0.01" value="0.02"></label><label>Action shift (s)<input id="raw-shift" type="number" step="0.01" value="0"></label></div>
+    <label>Maximum duration per bag (s)<input id="raw-duration" type="number" min="0.02" step="1" placeholder="Full recording"></label>
+    <label><input id="raw-extra-cmd" type="checkbox">Add unshifted command columns (17 features)</label>
+    <label><input id="raw-overwrite" type="checkbox">Overwrite selected bags’ existing bins</label>
+    <p class="hint">Default: 15 float32 columns, world pose and velocity, plus velocity/steering commands. Uses bag time and the latest sample at each timestep, matching WheeledLab raw alignment.</p>
+    <button id="raw-convert" class="primary wide" disabled>Convert selected bags</button>
+  </section>
+</aside>
+<main>
+  <div class="view-heading"><div><span class="eyebrow">RECORDING LIBRARY</span><h1>From recordings to raw bins.</h1></div><span class="tag">ROS2 · SQLITE / MCAP</span></div>
+  <div class="metrics"><div><span>Discovered</span><strong id="raw-count">—</strong><small>recordings</small></div><div><span>Selected</span><strong id="raw-selected">0</strong><small>ready to convert</small></div><div><span>Selected duration</span><strong id="raw-time">—</strong><small>seconds</small></div><div><span>Selected size</span><strong id="raw-size">—</strong><small>on disk</small></div></div>
+  <div class="raw-toolbar"><label>Filter recordings<input id="raw-filter" placeholder="Terrain, session, or bag name"></label><button id="raw-all" class="secondary">Select visible</button><button id="raw-none" class="secondary">Clear visible</button></div>
+  <div class="raw-library"><div id="raw-bags" class="bag-grid" aria-label="ROS2 recordings"><p class="raw-empty">Enter a folder path and scan to see your recordings.</p></div></div>
+  <details id="raw-metadata" class="raw-card" hidden><summary id="raw-metadata-title">Recording metadata</summary><pre id="raw-metadata-body"></pre></details>
+  <section id="raw-progress" class="raw-card progress-card" hidden aria-live="polite">
+    <div class="section-heading"><div><span class="eyebrow">CONVERSION PROGRESS</span><h2 id="raw-job-title">Preparing conversion…</h2></div><button id="raw-cancel" class="secondary">Cancel</button></div>
+    <div class="progress-track"><div id="raw-progress-bar"></div></div>
+    <div class="progress-caption"><strong id="raw-percent">0%</strong><span id="raw-current">Starting…</span></div>
+    <div class="progress-stats"><div><span>Bags handled</span><strong id="raw-handled">0 / 0</strong></div><div><span>Current messages</span><strong id="raw-messages">—</strong></div><div><span>Elapsed</span><strong id="raw-elapsed">—</strong></div><div><span>Estimated remaining</span><strong id="raw-eta">—</strong></div></div>
+    <div class="progress-track small"><div id="raw-bag-progress"></div></div>
+    <p id="raw-progress-output" class="hint"></p><button id="raw-view-bins" class="primary" hidden>View raw bins ↗</button><div id="raw-results" class="raw-results"></div>
+  </section>
+  <div id="raw-status" role="status">Scan a folder to inspect bags and choose what to convert.</div>
+</main>
+</div>
+<div id="bins-workspace" class="workspace bins-workspace" hidden>
+<aside id="bin-browser" aria-label="Raw bin folder browser">
+  <section><span class="eyebrow">BIN LIBRARY</span><h2>Browse your raw bins.</h2>
+    <label>Folder or .bin file<input id="bin-root" placeholder="/path/to/bins"></label>
+    <button id="bin-scan" class="primary wide">Open folder <span>↗</span></button>
+    <details><summary>Layout settings</summary>
+      <p class="hint">Read from metadata when available. Headerless files default to 0.02 s and one environment.</p>
+      <div class="two"><label>Timestep (s)<input id="bin-dt" type="number" min="0.000001" step="0.01" placeholder="Auto"></label><label>Columns<select id="bin-columns"><option value="">Auto</option><option value="15">15</option><option value="17">17</option></select></label></div>
+      <label>Environment count<input id="bin-envs" type="number" min="1" placeholder="Auto"></label>
+      <button id="bin-apply" class="secondary wide">Apply and reload</button>
+    </details>
+    <label>Filter files<input id="bin-filter" placeholder="Folder or bin name"></label>
+    <div class="section-heading"><span id="bin-count" class="muted">No folder open</span><button id="bin-collapse" class="bag-metadata-button">Collapse folders</button></div>
+    <div id="bin-tree" class="bin-tree" aria-label="Bin files">Open a folder to browse its bins.</div>
+  </section>
+</aside>
+<main>
+  <div class="view-heading"><div><span class="eyebrow">RAW BIN VIEWER</span><h1 id="bin-title">Inspect the recorded motion.</h1></div><button id="bin-tune-dbm" class="secondary" disabled>Tune DBM</button><button id="bin-toggle-browser" class="secondary" aria-expanded="true" aria-controls="bin-browser">Hide browser</button></div>
+  <p id="bin-path" class="hint bin-path">Choose a raw bin from the folder browser.</p>
+  <div id="bin-summary" class="bin-summary" hidden><span id="bin-duration"></span><span id="bin-samples"></span><span id="bin-layout"></span><label id="bin-env-label" hidden>Environment<select id="bin-env"></select></label></div>
+  <div class="bin-action-controls">
+    <div class="section-heading"><span class="muted">Action plot time range</span><span id="bin-action-time" class="muted">Current: —</span></div>
+    <div class="bin-action-inputs"><label>Show<select id="bin-action-mode"><option value="full">Full recording</option><option value="window">Around current</option></select></label><label>Before current (s)<input id="bin-action-before" type="number" min="0" step="0.1" value="5" disabled></label><label>After current (s)<input id="bin-action-after" type="number" min="0" step="0.1" value="5" disabled></label></div>
+    <details class="bin-axis-settings"><summary>Y-axis limits</summary>
+      <div class="bin-axis-inputs"><label>Velocity min (m/s)<input id="bin-velocity-min" type="number" step="any" placeholder="Auto"></label><label>Velocity max (m/s)<input id="bin-velocity-max" type="number" step="any" placeholder="Auto"></label></div>
+      <div id="bin-velocity-axis-error" class="bin-axis-error" role="status" hidden></div>
+      <div class="bin-axis-inputs"><label>Steering min (rad)<input id="bin-steering-min" type="number" step="any" placeholder="Auto"></label><label>Steering max (rad)<input id="bin-steering-max" type="number" step="any" placeholder="Auto"></label></div>
+      <div id="bin-steering-axis-error" class="bin-axis-error" role="status" hidden></div>
+      <p class="hint">Leave a limit blank for automatic scaling.</p>
+    </details>
+    <div id="bin-action-error" role="status" hidden></div>
+  </div>
+  <div class="bin-overview">
+  <div class="trajectory-panel"><div class="plot-heading"><span>World trajectory <small>x / y · meters</small></span><button id="bin-reset" class="bag-metadata-button">Reset view</button></div><canvas id="bin-trajectory" aria-label="Raw bin world trajectory"></canvas><div id="bin-empty" class="bin-empty"><div class="empty-orbit">↗</div><h3>Open a bin to explore its motion.</h3><p>Expand folders on the left to choose a recording.</p></div><div class="plot-footer"><span>Scroll to zoom · drag to pan</span><span id="bin-frame-info">No sample selected</span></div></div>
+    <div class="bin-command-stack">
+      <div class="bin-command-panel"><div class="plot-heading"><span>Velocity <small>m/s</small></span></div><div class="bin-signal-legend"><span class="bin-command-color" id="bin-command-value">Command —</span><span class="bin-body-color" id="bin-forward-value">Body x —</span><span id="bin-unshifted-value" hidden></span></div><canvas id="bin-forward-plot" aria-label="Command velocity and forward body velocity over time"></canvas></div>
+      <div class="bin-command-panel"><div class="plot-heading"><span>Steering <small>rad</small></span></div><div class="bin-signal-legend"><span class="bin-command-color" id="bin-steer-value">Command —</span><span id="bin-unshifted-steer-value" hidden></span></div><canvas id="bin-command-steer" aria-label="Steering command over time"></canvas></div>
+    </div>
+  </div>
+  <p id="bin-forward-source" class="hint" hidden></p>
+  <div class="transport"><button id="bin-play" class="secondary" aria-label="Play raw bin" disabled>▶</button><input id="bin-frame" aria-label="Raw bin sample slider" type="range" min="0" max="0" value="0" disabled><label>Sample<input id="bin-current" type="number" min="0" value="0" disabled></label><label>Speed<select id="bin-speed"><option value="0.25">0.25×</option><option value="1" selected>1×</option><option value="2">2×</option></select></label></div>
+  <p id="bin-warning" class="hint" hidden></p>
+  <div id="bin-signals" class="signal-panels bin-signals"></div>
+  <details id="bin-stats" class="raw-card" hidden><summary>Signal ranges and missing values</summary><div id="bin-stat-rows" class="bin-stat-rows"></div></details>
+  <div id="bin-status" role="status">Open a folder or a single raw .bin file.</div>
+</main>
+</div>
+<div id="dbm-workspace" hidden><div class="dbm-mode-bar"><button id="dbm-manual" class="secondary">Manual bin tuning</button><button id="dbm-advanced" class="secondary" title="Opens the existing ROS2-bag fitter and dataset tools. Fitting starts only when you click Fit DBM parameters.">Bag fitting &amp; dataset tools</button></div><iframe id="dbm-tool" title="Manual DBM calibration" data-src="/dbm/" loading="lazy"></iframe></div>
+<div id="dynamics-workspace" class="workspace" hidden>
 <aside>
   <section>
     <div class="section-heading"><span class="eyebrow">INPUT</span><span id="bag-state" class="muted">No recording loaded</span></div>
@@ -77,6 +166,7 @@
   </div>
 </aside>
 <main>
+  <button id="dbm-return" class="secondary" hidden>Back to manual bin tuning</button>
   <div class="view-heading"><div><span class="eyebrow">TRAJECTORY EXPLORER</span><h1 id="view-title">Understand the dynamics.</h1></div><button id="reset-view" class="secondary">Reset view</button></div>
   <div class="metrics"><div><span>Position RMSE</span><strong id="metric-position">—</strong><small>meters</small></div><div><span>Heading MAE</span><strong id="metric-heading">—</strong><small>degrees</small></div><div><span>Final position error</span><strong id="metric-final">—</strong><small>meters</small></div><div><span>Recording</span><strong id="metric-duration">—</strong><small>seconds · selected segment</small></div></div>
   <div class="trajectory-panel"><div class="plot-heading"><span>World trajectory <small>meters</small></span><div class="legend"><span class="recording">Recording</span><span class="measured">Measured future</span><span class="predicted">Prediction</span></div></div><canvas id="trajectory" aria-label="World trajectory and predicted rollout"></canvas><div id="empty-view"><div class="empty-orbit">↗</div><h3>A recording is your starting point.</h3><p>Load a ROS2 bag to explore motion and compare predictions.</p></div><div class="plot-footer">Scroll to zoom · drag to pan<span id="frame-info">No frame selected</span></div></div>
@@ -88,5 +178,8 @@
 </main>
 </div>
 <script src="{{ url_for('static', filename='app.js') }}"></script>
+<script src="{{ url_for('static', filename='raw_bags.js') }}"></script>
+<script src="{{ url_for('static', filename='bin_explorer.js') }}"></script>
+<script src="{{ url_for('static', filename='raw_bins.js') }}"></script>
 </body>
 </html>

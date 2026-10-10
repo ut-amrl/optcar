@@ -27,9 +27,31 @@ def main():
     gui.add_argument("--dataset-root", default="datasets")
     gui.add_argument("--host", default="127.0.0.1")
     gui.add_argument("--port", type=int, default=5050)
+    gui.add_argument("--bag-root", help="Prefill the raw bag conversion folder")
 
     topics = commands.add_parser("topics", help="List topics in a ROS2 recording")
     topics.add_argument("bag")
+
+    scan = commands.add_parser("scan-bags", help="Discover ROS2 bags and show metadata")
+    scan.add_argument("root")
+    scan.add_argument("--json", action="store_true", help="Print full machine-readable metadata")
+    raw = commands.add_parser("bags-to-bins", help="Convert selected ROS2 bags to raw WheeledLab bins")
+    raw.add_argument("root", help="Folder containing bag directories (searched recursively)")
+    raw.add_argument("--output", help="Defaults to ROOT's parent / bins")
+    raw.add_argument("--select", nargs="+", help="Bag paths relative to ROOT; default: all discovered bags")
+    raw.add_argument("--exclude", nargs="+", default=[], help="Relative bag paths to omit")
+    raw.add_argument("--config", help="Raw conversion YAML (see configs/raw_bags.yaml)")
+    raw.add_argument("--dt", type=float)
+    raw.add_argument("--pose-topic")
+    raw.add_argument("--twist-topic")
+    raw.add_argument("--command-topic")
+    raw.add_argument("--aux-twist-topic", help="Optional body twist saved separately; empty name disables auxiliary output")
+    raw.add_argument("--twist-frame", choices=["world", "body"])
+    raw.add_argument("--command-type", choices=["twist_steering", "ackermann"])
+    raw.add_argument("--action-shift", type=float)
+    raw.add_argument("--max-duration", type=float)
+    raw.add_argument("--include-cmd-vel", action=argparse.BooleanOptionalAction, default=None)
+    raw.add_argument("--overwrite", action="store_true", help="Replace only selected bags' bins")
 
     generate = commands.add_parser("generate", help="Generate DBM training data")
     generate.add_argument("--config", default="configs/datagen.yaml")
@@ -95,18 +117,20 @@ def main():
     args = parser.parse_args()
     try:
         _dispatch(args)
-    except (ValueError, FileNotFoundError, ImportError) as exc:
+    except (ValueError, OSError, ImportError) as exc:
         parser.exit(2, f"optcar: {exc}\n")
 
 
 def _dispatch(args):
-    if args.command == "init":
+    if args.command in ("scan-bags", "bags-to-bins"):
+        _raw_bags(args)
+    elif args.command == "init":
         for path in (Path(args.dataset_root) / "generalist_dataset", Path(args.dataset_root) / "syn_data/terrains", Path(args.checkpoint_root)):
             path.mkdir(parents=True, exist_ok=True)
         _print({"datasets": args.dataset_root, "checkpoints": args.checkpoint_root})
     elif args.command == "gui":
         from optcar.gui.server import create_app
-        create_app(args.dataset_root).run(host=args.host, port=args.port, threaded=True, debug=False)
+        create_app(args.dataset_root, args.bag_root).run(host=args.host, port=args.port, threaded=True, debug=False)
     elif args.command == "topics":
         from optcar.datagen.rosbag_to_dataset import topics
         _print(topics(args.bag))
@@ -184,6 +208,76 @@ def _dispatch(args):
         result = predict_window(model, data, segment["states"], segment["actions"], args.current, args.horizon)
         write_json(args.output, result)
         _print(result["metrics"])
+
+
+def _raw_bags(args):
+    from optcar.datagen.raw_bags import RawBagConfig, convert_raw_bags, discover_bags
+    from rich.console import Console
+    from rich.live import Live
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich.text import Text
+    console = Console()
+    scan = discover_bags(args.root)
+    if args.command == "scan-bags":
+        if args.json:
+            _print(scan)
+            return
+        table = Table("Bag (relative path)", "Duration", "Size", "Messages", "Metadata")
+        for b in scan["bags"]:
+            table.add_row(b["relative_path"], f'{b.get("duration_s", 0):.1f}s', f'{b["bytes"] / 2**20:.1f} MB',
+                          str(b.get("messages", 0)), b["error"] or "ready")
+        console.print(table)
+        console.print(f'{len(scan["bags"])} bags · Default output: {scan["default_output"]}', markup=False)
+        return
+    cfg = read_config(args.config) if args.config else {}
+    for key in RawBagConfig.__dataclass_fields__:
+        value = getattr(args, key, None)
+        if value is not None:
+            cfg[key] = value
+    config = RawBagConfig(**cfg)
+    known = {b["relative_path"]: b["path"] for b in scan["bags"]}
+    requested = args.select if args.select is not None else list(known)
+    unknown = (set(requested) | set(args.exclude)) - known.keys()
+    if unknown:
+        raise ValueError(f"Unknown bag paths: {sorted(unknown)}. Use optcar scan-bags ROOT")
+    selected = [known[p] for p in requested if p not in args.exclude]
+    import signal
+    interrupted = False
+    def cancel(signum, frame):
+        nonlocal interrupted
+        interrupted = True
+    old_handler = signal.signal(signal.SIGINT, cancel)
+    def duration(value):
+        return "—" if value is None else f"{value:.0f}s"
+    def render(p):
+        percent = p.get("percent", 0)
+        filled = round(percent / 100 * 30)
+        lines = Text()
+        lines.append(f"{'━' * filled}{'─' * (30 - filled)} {percent:5.1f}%\n", style="green")
+        lines.append(f"Bag {p.get('bag_index', 0)}/{p.get('total_bags', len(selected))} · {p.get('phase', 'starting')}\n")
+        lines.append(f"{p.get('bag', '')}\n", style="cyan")
+        lines.append(f"Messages {p.get('messages', 0):,}/{p.get('messages_total', 0):,} · Elapsed {duration(p.get('elapsed_s', 0))} · ETA {duration(p.get('eta_s'))}\n")
+        rows = p.get("results", [])
+        lines.append(f"Saved {sum(r['status'] == 'complete' for r in rows)} · Failed {sum(r['status'] == 'failed' for r in rows)} · Ctrl+C to cancel\n")
+        lines.append(f"Output: {p.get('output', args.output or scan['default_output'])}")
+        return Panel(lines, title="ROS2 bags → raw bins", border_style="green")
+    try:
+        with Live(render({}), console=console, refresh_per_second=8) as live:
+            result = convert_raw_bags(scan["root"], selected, args.output, config, args.overwrite,
+                                      progress=lambda p: live.update(render(p)), cancelled=lambda: interrupted)
+    finally:
+        signal.signal(signal.SIGINT, old_handler)
+    console.print(f"Saved {result['converted']} bags · Failed {result['failed']} · Output: {result['output']}", markup=False)
+    for row in result["results"]:
+        if row.get("warning"):
+            console.print(f"{row['bag']}: {row['warning']}", markup=False, style="yellow")
+        if row["status"] == "failed":
+            console.print(f"{row['bag']}: {row['error']}", markup=False, style="red")
+    if result["cancelled"]:
+        raise SystemExit(130)
+    if result["failed"]:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

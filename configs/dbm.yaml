@@ -1,15 +1,16 @@
-# Defaults from wheeledlab_envs. Save one calibrated copy per terrain.
+# WheeledLab CORL26 AlphaTruck no-randomization defaults.
+# Save one calibrated copy per terrain.
 params:
-  len_f: 0.101
-  len_r: 0.101
-  mass: 1.09
-  inertia: 0.015
+  len_f: 0.245
+  len_r: 0.245
+  mass: 13.0
+  inertia: 0.4565
   max_steering_angle: 0.5
-  C_tire_f: 20.0
-  C_tire_r: 20.0
-  C_throttle_a: 5.5
-  C_rollf: 0.0
-  C_drag: 0.0
-  wheel_time_constant: 0.05
+  C_tire_f: 80.0
+  C_tire_r: 130.0
+  C_throttle_a: 400.0
+  C_rollf: 20.0
+  C_drag: 3.0
+  wheel_time_constant: 0.02
   min_wheel_velocity: -6.0
   max_wheel_velocity: 6.0

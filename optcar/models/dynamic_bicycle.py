@@ -204,17 +204,19 @@ def _rollout_torch(
 
 @dataclass
 class DBMParams:
-    len_f: float = 0.101
-    len_r: float = 0.101
-    mass: float = 1.09
-    inertia: float = 0.015
+    """WheeledLab's CORL26 AlphaTruck no-randomization defaults."""
+
+    len_f: float = 0.245
+    len_r: float = 0.245
+    mass: float = 13.0
+    inertia: float = 0.4565
     max_steering_angle: float = 0.5
-    C_tire_f: float = 20.0
-    C_tire_r: float = 20.0
-    C_throttle_a: float = 5.5
-    C_rollf: float = 0.0
-    C_drag: float = 0.0
-    wheel_time_constant: float = 0.05
+    C_tire_f: float = 80.0
+    C_tire_r: float = 130.0
+    C_throttle_a: float = 400.0
+    C_rollf: float = 20.0
+    C_drag: float = 3.0
+    wheel_time_constant: float = 0.02
     min_wheel_velocity: float = -6.0
     max_wheel_velocity: float = 6.0
 
