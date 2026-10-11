@@ -1,5 +1,7 @@
 # Runtime dependencies, including the official GPU-enabled Torch build.
 # tmux is installed by environment.yml / scripts/setup_env.sh.
+# Set the package sources explicitly before adding the CUDA wheel index.
+--index-url https://pypi.org/simple
 --extra-index-url https://download.pytorch.org/whl/cu128
 numpy>=1.24,<3
 scipy>=1.10,<2
