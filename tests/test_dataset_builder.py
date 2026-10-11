@@ -46,13 +46,13 @@ def test_build_preserves_actions_all_envs_and_restart(tmp_path,width):
     result=build_dataset(tmp_path/'assembled',[source],cfg)
     assert result['new_windows']==6
     assert file.read_bytes()==original
-    manifest=json.loads((tmp_path/'assembled/road/real/manifest.json').read_text())
+    manifest=json.loads((tmp_path/'assembled/processed/real/road/manifest.json').read_text())
     episodes=list(manifest['episodes'].values())
     assert len(episodes)==1
     assert episodes[0]['raw']==str(file)
-    assert not (tmp_path/'assembled/road/real/raw').exists()
+    assert not (tmp_path/'assembled/processed/real/road/raw').exists()
     assert episodes[0]['shards']==[] and episodes[0]['stored_windows']==6
-    first=np.fromfile(tmp_path/'assembled/road/real'/manifest['processed_shards'][0]['path'],np.float32).reshape(-1,7,42)
+    first=np.fromfile(tmp_path/'assembled/processed/real/road'/manifest['processed_shards'][0]['path'],np.float32).reshape(-1,7,42)
     np.testing.assert_allclose(first[0,:,39:41],rows[0,:7,13:15])
     np.testing.assert_allclose(first[0,3,13:20],[0,0,0,1,0,0,0],atol=1e-6)
     assert len(FKDDataset(tmp_path/'assembled',cfg))==6
@@ -86,7 +86,7 @@ def test_parent_of_three_raw_terrains_creates_processed_folder(tmp_path):
     assert result['dataset'] == str(parent / 'processed')
     assert result['completed'] == 3 and result['new_windows'] == 48
     for terrain in ('grass', 'road', 'mulch'):
-        assert (parent / 'processed' / terrain / 'sim' / 'manifest.json').is_file()
+        assert (parent / 'processed' / 'sim' / terrain / 'manifest.json').is_file()
     assert all(file.read_bytes() == value for file, value in originals.items())
     assert build_dataset(parent, sources, cfg)['new_windows'] == 0
     assert len(FKDDataset(parent / 'processed', cfg)) == 48
@@ -103,6 +103,7 @@ def test_shared_and_nonempty_folders_keep_inputs_and_resume(tmp_path, location):
     original = file.read_bytes()
     result = build_dataset(output, [spec(file.parent)], cfg)
     assert result['new_windows'] == 8
+    assert result['dataset'] == str(output / 'processed')
     assert file.read_bytes() == original and note.read_text() == 'keep this file'
     # Scanning the original folder again must exclude this build's raw copies
     # and processed shards, including when they live within the input tree.
@@ -111,16 +112,72 @@ def test_shared_and_nonempty_folders_keep_inputs_and_resume(tmp_path, location):
     assert build_dataset(output, [spec(file.parent)], cfg)['new_windows'] == 0
 
 
-def test_existing_output_file_is_preserved(tmp_path):
+@pytest.mark.parametrize('split,relative', [
+    ('train', 'metadata/schema.json'), ('train', 'metadata/dataset_config.py'),
+    ('train', 'train/processed_0000000000.bin'), ('val', 'valid/processed_0000000000.bin'),
+    ('test', 'test/processed_0000000000.bin'),
+])
+def test_existing_output_file_is_preserved(tmp_path, split, relative):
     file, _ = raw_fixture(tmp_path / 'inputs')
     output = tmp_path / 'output'
-    conflict = output / 'road' / 'real' / 'metadata' / 'schema.json'
+    conflict = output / 'processed' / 'real' / 'road' / relative
     conflict.parent.mkdir(parents=True)
     conflict.write_text('existing user metadata')
     with pytest.raises(ValueError, match='existing file'):
-        build_dataset(output, [spec(file)], DataConfig(history_steps=3, future_steps=2))
+        build_dataset(output, [spec(file, split=split)], DataConfig(history_steps=3, future_steps=2))
     assert conflict.read_text() == 'existing user metadata'
-    assert not (output / 'dataset_build.json').exists()
+    assert not (output / 'processed' / 'dataset_build.json').exists()
+
+
+def test_source_terrain_split_layout_keeps_processed_metadata_and_raw_inputs(tmp_path):
+    sources, originals = [], {}
+    groups = [('real', 'road'), ('sim', 'grass')]
+    for split in ('train', 'val', 'test'):
+        for kind, terrain in groups:
+            file, rows = raw_fixture(tmp_path / 'inputs' / kind / terrain / split,
+                                     environments=2, source=f'/bags/{kind}/{terrain}/{split}')
+            rows[..., 0] += len(sources) * 100
+            rows.tofile(file)
+            sources.append(spec(file, source=kind, terrain=terrain, split=split))
+            originals[file] = file.read_bytes()
+    cfg = DataConfig(history_steps=4, future_steps=3, stride=2, shard_windows=4)
+    output = tmp_path / 'chosen_output'
+    result = build_dataset(output, sources, cfg, device='cpu', workers=2)
+    assert result['dataset'] == str(output / 'processed')
+    assert result['completed'] == 6 and result['new_windows'] == 36
+    assert {folder.name for folder in (output / 'processed').iterdir() if folder.is_dir()} == {'real', 'sim'}
+    for kind, terrain in groups:
+        group = output / 'processed' / kind / terrain
+        assert {folder.name for folder in group.iterdir() if folder.is_dir()} == {'train', 'test', 'valid', 'metadata'}
+        assert not (group / 'raw').exists() and not (group / 'processed').exists()
+        schema = json.loads((group / 'metadata/schema.json').read_text())
+        assert schema['features'] == 42 and schema['feature_dim'] == 42
+        assert schema['dtype'] == 'float32' and schema['quaternion_order'] == 'wxyz'
+        assert schema['history_horizon'] == 4 and schema['future_horizon'] == 4
+        assert schema['total_horizon'] == 7 and schema['control_dt'] == .02
+        config_text = (group / 'metadata/dataset_config.py').read_text()
+        assert 'class ProcessedDatasetConfig:' in config_text
+        assert 'class DatasetConfig:' not in config_text
+        manifest = json.loads((group / 'manifest.json').read_text())
+        assert manifest['flat_processed'] is True
+        for split, folder in [('train', 'train'), ('val', 'valid'), ('test', 'test')]:
+            shards = [entry for entry in manifest['processed_shards'] if entry['split'] == split]
+            assert [entry['shape'] for entry in shards] == [[4, 7, 42], [2, 7, 42]]
+            assert [entry['path'] for entry in shards] == [
+                f'{folder}/processed_0000000000.bin', f'{folder}/processed_0000000001.bin']
+            dataset = FKDDataset(group / folder, cfg, split)
+            assert len(dataset) == 6
+            assert all(entry[3] == terrain and entry[2] == kind for entry in dataset.shards)
+            recorded = np.concatenate([np.fromfile(group / entry['path'], np.float32).reshape(entry['shape'])
+                                       for entry in shards])
+            source_index = next(index for index, entry in enumerate(sources)
+                                if entry['source'] == kind and entry['split'] == split)
+            np.testing.assert_array_equal(recorded[:, 0, 41], np.full(6, source_index))
+            np.testing.assert_allclose(recorded[:, 0, 0], source_index * 100 + np.tile([0, .2, .4], 2), atol=1e-5)
+            np.testing.assert_allclose(recorded[:, 0, 39], np.tile([0, .4, .8], 2))
+    assert all(file.read_bytes() == content for file, content in originals.items())
+    assert len(FKDDataset(output / 'processed', cfg, 'all')) == 36
+    assert build_dataset(output, sources, cfg, device='cpu')['new_windows'] == 0
 
 
 def test_raw_only_metadata_saved_split_and_wheeledlab_nan_policy(tmp_path):
@@ -208,9 +265,9 @@ def test_cpu_gpu_build_parity_progress_and_resume(tmp_path, shard_windows):
     assert any('Converting' in p['current'] for p in progress)
     assert any('Writing' in p['current'] for p in progress)
     assert all(p['device']=='cuda:0' for p in progress)
-    cpu_shards=sorted((tmp_path/'cpu').rglob('processed/data/**/*.bin'))
-    gpu_shards=sorted((tmp_path/'gpu').rglob('processed/data/**/*.bin'))
-    assert len(cpu_shards)==len(gpu_shards)
+    cpu_shards=sorted((tmp_path/'cpu/processed/real/road/train').glob('*.bin'))
+    gpu_shards=sorted((tmp_path/'gpu/processed/real/road/train').glob('*.bin'))
+    assert len(cpu_shards)==len(gpu_shards)==(12+shard_windows-1)//shard_windows
     for left,right in zip(cpu_shards,gpu_shards):
         np.testing.assert_allclose(np.fromfile(left,np.float32),np.fromfile(right,np.float32),atol=2e-6,rtol=2e-6)
     assert build_dataset(tmp_path/'gpu',[spec(file)],cfg,device='cpu')['new_windows']==0
@@ -290,7 +347,7 @@ def test_separate_synthetic_collections_can_repeat_saved_episode_ids(tmp_path):
     assert plan['files']==2 and plan['windows']['val']==16 and not plan['errors']
     result=build_dataset(tmp_path/'built',[source],cfg,device='cpu',workers=2)
     assert result['completed']==2 and result['new_windows']==16
-    manifest=json.loads((tmp_path/'built/grass/sim/manifest.json').read_text())
+    manifest=json.loads((tmp_path/'built/processed/sim/grass/manifest.json').read_text())
     assert len(manifest['episodes'])==2
     assert all(e['split']=='val' for e in manifest['episodes'].values())
     assert all(path.read_bytes()==contents for path,contents in original.items())
@@ -306,9 +363,10 @@ def test_resume_legacy_per_environment_build_without_rewriting(tmp_path):
     sources = [spec(file)]
     entries = inspect_sources(sources, cfg)['bins']
     output = tmp_path/'built'
-    target = output/'road/real'
+    target = output/'processed/real/road'
     # A stopped older builder has committed its first two environments.
-    with DatasetWriter(target, cfg, 'real', 'road', {'inputs': entries, 'calibrations': []}) as writer:
+    with DatasetWriter(target, cfg, 'real', 'road', {'inputs': entries, 'calibrations': []},
+                       flat_processed=True) as writer:
         for env in range(2):
             writer.write_episode(_episode_name(entries[0], env), rows[env, :, :13], rows[env, :, 13:15],
                                  'train', session=entries[0]['session'])
@@ -323,6 +381,32 @@ def test_resume_legacy_per_environment_build_without_rewriting(tmp_path):
     assert batched['shards']==[] and batched['stored_windows']==6
     assert [s['shape'][0] for s in manifest['processed_shards']] == [4, 2]
     assert build_dataset(output, sources, cfg, device='cpu')['new_windows'] == 0
+
+
+def test_old_output_layout_is_rejected_before_creating_a_second_corpus(tmp_path):
+    file, _ = raw_fixture(tmp_path / 'inputs', environments=2)
+    cfg = DataConfig(history_steps=4, future_steps=3, stride=2, shard_windows=4)
+    sources = [spec(file)]
+    plan = inspect_sources(sources, cfg)
+    output = tmp_path / 'chosen_output'
+    root = output / 'processed'
+    legacy_group = root / 'road' / 'real' / 'processed' / 'data'
+    legacy_group.mkdir(parents=True)
+    legacy_bin = legacy_group / 'existing.bin'
+    np.arange(7 * 42, dtype=np.float32).reshape(1, 7, 42).tofile(legacy_bin)
+    index = root / 'dataset_build.json'
+    index.write_text(json.dumps({'config': plan['config'], 'bins': plan['bins'],
+                                 'seed': plan['seed'], 'fractions': plan['fractions']}))
+    original_bin, original_index = legacy_bin.read_bytes(), index.read_bytes()
+    original_raw = file.read_bytes()
+
+    with pytest.raises(ValueError, match='older nested output layout'):
+        build_dataset(output, sources, cfg, device='cpu')
+
+    assert not (root / 'real' / 'road').exists()
+    assert list(root.rglob('*.bin')) == [legacy_bin]
+    assert legacy_bin.read_bytes() == original_bin
+    assert index.read_bytes() == original_index and file.read_bytes() == original_raw
 
 
 def test_cancel_during_batch_write_removes_uncommitted_windows_and_resumes(tmp_path):
@@ -346,13 +430,13 @@ def test_carryover_combines_input_files_and_loader_preserves_file_ids(tmp_path):
         originals[file] = file.read_bytes()
     cfg=DataConfig(history_steps=4,future_steps=3,stride=2,shard_windows=10)
     result=build_dataset(tmp_path/'built',sources,cfg,device='cpu')
-    target=tmp_path/'built/road/real'
+    target=tmp_path/'built/processed/real/road'
     manifest=json.loads((target/'manifest.json').read_text())
     assert result['new_windows']==18
     assert [s['shape'] for s in manifest['processed_shards']]==[[10,7,42],[8,7,42]]
     assert [s['path'] for s in manifest['processed_shards']]==[
-        'processed/data/train/processed_0000000000.bin',
-        'processed/data/train/processed_0000000001.bin']
+        'train/processed_0000000000.bin',
+        'train/processed_0000000001.bin']
     assert len(manifest['episodes'])==3
     assert all(e['shards']==[] and e['windows']==e['stored_windows']==6 for e in manifest['episodes'].values())
     packed=np.concatenate([np.fromfile(target/s['path'],np.float32).reshape(s['shape']) for s in manifest['processed_shards']])
@@ -377,7 +461,7 @@ def test_interleaved_splits_have_independent_carryover(tmp_path):
         sources.append(spec(file,split=split))
     cfg=DataConfig(history_steps=4,future_steps=3,stride=2,shard_windows=10)
     build_dataset(tmp_path/'built',sources,cfg,device='cpu')
-    target=tmp_path/'built/road/real'
+    target=tmp_path/'built/processed/real/road'
     manifest=json.loads((target/'manifest.json').read_text())
     for split,ids in [('train',[0,2]),('val',[1,3])]:
         shards=[s for s in manifest['processed_shards'] if s['split']==split]
@@ -395,7 +479,7 @@ def test_failed_next_input_flushes_previous_carried_windows(tmp_path):
     cfg=DataConfig(history_steps=4,future_steps=3,stride=2,shard_windows=10)
     with pytest.raises(ValueError,match='Zero quaternion'):
         build_dataset(tmp_path/'built',[spec(first),spec(second)],cfg,device='cpu')
-    target=tmp_path/'built/road/real'
+    target=tmp_path/'built/processed/real/road'
     manifest=json.loads((target/'manifest.json').read_text())
     assert [s['shape'][0] for s in manifest['processed_shards']]==[6]
     assert len(manifest['episodes'])==1

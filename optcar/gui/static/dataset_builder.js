@@ -5,6 +5,11 @@ function builderStatus(text, error=false) {
   $('builder-status').textContent=text;
   $('builder-status').classList.toggle('error', error);
 }
+function updateBuilderOutputPreview(){
+  const output=$('builder-output').value.trim();
+  const processed=output?`${output.replace(/\/+$/,'')}/processed`:'<chosen folder>/processed';
+  $('builder-output-preview').textContent=`Output: ${processed}/{sim|real}/{terrain}/{train|test|valid}`;
+}
 function invalidateBuilder() {
   builderState.revision++;
   builderState.plan=null;
@@ -15,6 +20,7 @@ function invalidateBuilder() {
   $('builder-window-hint').textContent=`${h+f} samples per window · ${(Math.max(0,h-1)*dt).toFixed(2)}s observed history · ${(f*dt).toFixed(2)}s future`;
   const batch=Number($('builder-shard-windows').value);
   $('builder-output-shape-hint').textContent=`Processed shape: [${batch.toLocaleString()}, ${h+f}, 42]. The final bin for each terrain/source/split may be smaller. Synthetic batch size sets trajectories per raw bin.`;
+  updateBuilderOutputPreview();
 }
 function builderRequest(sources=builderState.sources, selected=true) {
   return {output:$('builder-output').value.trim(),device:$('builder-device').value,workers:number('builder-workers'),data:dataConfig(),seed:number('builder-seed'),
@@ -103,6 +109,7 @@ function displayBuilderPlan(plan) {
   for(const message of plan.errors){const item=document.createElement('li');item.textContent=message;errors.append(item);}errors.hidden=!plan.errors.length;
 }
 bind('builder-add-real',()=>addDatasetSource());
+$('tab-builder').addEventListener('click',updateBuilderOutputPreview);
 bind('builder-add-sim',()=>addDatasetSource('','road','sim'));
 bind('builder-review',async()=>{
   const request=builderRequest(),revision=builderState.revision;

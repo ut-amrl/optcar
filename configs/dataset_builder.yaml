@@ -1,5 +1,5 @@
 # Edit source paths, terrain labels and output before running.
-output: datasets/built/default
+output: datasets/built/default  # Parent: writes processed/{sim|real}/{terrain}/{train|test|valid} inside it.
 workers: 16  # WheeledLab parallel file-loading default.
 # Optional: device: cuda:1 (defaults to the first visible GPU, or CPU if none).
 data:
@@ -21,3 +21,4 @@ sources:
     split: auto  # Preserve saved synthetic episode splits.
 # Optional source fields: selected_paths, vehicle_id, dt, columns, num_envs.
 # Layout/timestep overrides are for standalone bins; no resampling is performed.
+# Dataset viewer config: <output>/processed/<sim|real>/<terrain>/metadata/dataset_config.py

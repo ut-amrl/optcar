@@ -139,7 +139,7 @@ def test_builder_files_match_wheeledlab_whole_file_processor_and_writer(tmp_path
     reference_dir = tmp_path/'reference'; reference_dir.mkdir()
     for index, values in enumerate(expected.split(cfg.shard_windows)):
         ns['save_processed_batch'](SimpleNamespace(timing=False), values, reference_dir, index)
-    actual_files = sorted((tmp_path/'built').rglob('processed/data/**/*.bin'))
+    actual_files = sorted((tmp_path/'built/processed/sim/road/train').glob('*.bin'))
     expected_files = sorted(reference_dir.glob('*.bin'))
     assert len(actual_files) == len(expected_files) == 6
     for actual, expected_file in zip(actual_files, expected_files):
@@ -150,7 +150,7 @@ def test_builder_files_match_wheeledlab_whole_file_processor_and_writer(tmp_path
             # WheeledLab's scripted GPU math, whose fusion can round differently.
             np.testing.assert_allclose(np.fromfile(actual, np.float32), np.fromfile(expected_file, np.float32),
                                        atol=2e-6, rtol=2e-6)
-    assert not (tmp_path/'built/road/sim/raw').exists()
+    assert not (tmp_path/'built/processed/sim/road/raw').exists()
     assert file.read_bytes() == original
     assert len(FKDDataset(tmp_path/'built', cfg)) == 93
 
@@ -210,7 +210,7 @@ def flush():
     flush_reference()
     cfg=DataConfig(history_steps=4,future_steps=3,stride=2,shard_windows=10)
     result=build_dataset(tmp_path/'built',sources,cfg,device=device)
-    actual_files=sorted((tmp_path/'built').rglob('processed/data/**/*.bin'))
+    actual_files=sorted((tmp_path/'built/processed/sim/road/train').glob('*.bin'))
     expected_files=sorted(reference_dir.glob('*.bin'))
     assert result['new_windows']==18 and len(actual_files)==len(expected_files)==2
     assert [file.stat().st_size//(7*42*4) for file in actual_files]==[10,8]

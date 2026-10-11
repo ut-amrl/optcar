@@ -174,13 +174,15 @@ def test_builder_tmux_progress_reconnect_and_separate_dashboards(manager, tmp_pa
     assert response.status_code==200,response.json
     job=response.json
     assert job['tmux_session'].startswith('optcar-build-')
+    assert job['dataset']==str(tmp_path/'output/processed')
     with pytest.raises(ValueError,match='active job'):
         manager.start_build(tmp_path/'output',[spec(file)],config,device='cpu')
     record=wait_finished(manager,job['job_id'])
     assert record['status']=='complete',record
     assert record['device']=='cpu' and record['workers']==3 and record['result']['new_windows']==24
+    assert record['dataset']==record['result']['dataset']==str(tmp_path/'output/processed')
     snapshot=json.loads((manager.job_dir(job['job_id'])/'request.json').read_text())
-    assert snapshot['workers']==3
+    assert snapshot['workers']==3 and snapshot['output']==str(tmp_path/'output')
     assert record['progress']['completed']==record['progress']['total']==24
     assert record['progress']['files_completed']==record['progress']['files_total']==1
     new_client=create_app(manager.root).test_client()
@@ -207,8 +209,10 @@ def test_builder_output_size_survives_preview_and_tmux_request(tmp_path, monkeyp
     assert preview.json['config']['shard_windows'] == (batch_size or 10000)
     result = client.post('/api/dataset-builder/build', json=request)
     assert result.status_code == 200 and len(launched) == 1
+    assert result.json['dataset'] == str(tmp_path/'built/processed')
     snapshot = json.loads((launched[0]/'request.json').read_text())
     assert snapshot['data']['shard_windows'] == preview.json['config']['shard_windows']
+    assert snapshot['output'] == request['output']
 
 
 @pytest.mark.parametrize('batch_size', [0, -1, 2.5])

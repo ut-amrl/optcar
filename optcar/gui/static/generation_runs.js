@@ -23,7 +23,7 @@ function generationRunCard(job,report=generationStatus,refresh=refreshGeneration
   const button=(label,action)=>{const el=document.createElement('button');el.className='secondary';el.textContent=label;el.onclick=async()=>{el.disabled=true;try{await action();}catch(e){report(e.message,true);}finally{el.disabled=el===entry.cancel&&entry.job.status==='cancelling';}};actions.append(el);return el;};
   const copy=button('Copy attach command',async()=>{try{await navigator.clipboard.writeText(entry.job.attach_command);report('Attach command copied.');}catch{report(`Run in a terminal: ${entry.job.attach_command}`);}});
   const cancel=button('Cancel',async()=>{await api(`/api/jobs/${job.job_id}/cancel`,{});await refresh();});
-  const view=button('Visualize',()=>openBinFolder(entry.job.dataset,'syn-bins'));
+  const view=button('Visualize',()=>entry.job.kind==='dataset_build'?openProcessedDataset(entry.job.result?.dataset||entry.job.dataset):openBinFolder(entry.job.dataset,'syn-bins'));
   const build=button('Use in builder',()=>{addDatasetSource(entry.job.dataset,entry.job.terrain,'sim');selectTab('builder');});
   card.append(header,session,device,progress,detail,timing,output,command,error,actions);
   const entry={card,title,badge,session,device,progress,detail,timing,output,command,error,copy,cancel,view,build,job};
@@ -47,7 +47,8 @@ function updateGenerationRun(entry,job){
   entry.copy.hidden=!job.session_available;
   entry.cancel.hidden=!generationRunActive(job);entry.cancel.disabled=job.status==='cancelling';
   const saved=(job.result?.completed||0)>0;
-  entry.view.hidden=job.kind==='dataset_build'||!saved;entry.build.hidden=job.kind==='dataset_build'||!saved;
+  entry.view.textContent=job.kind==='dataset_build'?'View dataset':'Visualize';
+  entry.view.hidden=!saved;entry.build.hidden=job.kind==='dataset_build'||!saved;
 }
 async function refreshGenerationRuns(){
   if(generationRunsBusy)return;

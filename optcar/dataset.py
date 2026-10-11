@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 import os
+import operator
 
 import numpy as np
 import torch
@@ -113,9 +114,10 @@ def session_split(session, seed=42, fractions=(0.8, 0.1, 0.1)):
 
 class DatasetWriter:
     """One active writer per dataset. Manifest commits make restarts idempotent."""
-    def __init__(self, root, config, source, terrain, provenance=None, process_windows=True):
+    def __init__(self, root, config, source, terrain, provenance=None, process_windows=True, flat_processed=False):
         self.root, self.config = Path(root), config
         self.process_windows = process_windows
+        self.flat_processed = flat_processed
         self.root.mkdir(parents=True, exist_ok=True)
         self.lock = (self.root / ".writer.lock").open("a")
         import fcntl
@@ -134,10 +136,14 @@ class DatasetWriter:
                     raise ValueError("Dataset configuration changed; choose a new output directory")
                 if self.manifest.get("process_windows", True) != process_windows:
                     raise ValueError("Raw generation and dataset building need separate output directories")
+                if self.manifest.get("flat_processed", False) != flat_processed:
+                    raise ValueError("Dataset output layout changed; choose a new output directory")
             else:
                 self.manifest = {"schema": SCHEMA if process_windows else RAW_SCHEMA,
                                  "process_windows": process_windows, "config": asdict(config), "source": source,
                                  "terrain": terrain, "provenance": provenance or {}, "episodes": {}}
+                if flat_processed:
+                    self.manifest["flat_processed"] = True
                 write_json(self.path, self.manifest)
             self.session_splits = {e["session"]: e["split"] for e in self.manifest["episodes"].values()}
             self.dirty = False
@@ -170,10 +176,15 @@ class DatasetWriter:
         entry = self.manifest["episodes"].get(episode)
         return entry is not None and entry.get("stored_windows", entry["windows"]) == entry["windows"]
 
+    @staticmethod
+    def processed_filename(split, index, flat_processed=False):
+        folder = {"val": "valid"}.get(split, split) if flat_processed else f"processed/data/{split}"
+        return f"{folder}/processed_{index:010d}.bin"
+
     def _save_window_batch(self, split, values, progress=None):
         """WheeledLab save_processed_batch plus OptCar's split/manifest metadata."""
         index = self.batch_indices[split]
-        filename = f"processed/data/{split}/processed_{index:010d}.bin"
+        filename = self.processed_filename(split, index, self.flat_processed)
         path = self.root / filename
         if path.exists() or path.with_suffix(".bin.tmp").exists():
             raise ValueError(f"Output would replace an existing file: {path}")
@@ -348,7 +359,8 @@ class DatasetWriter:
             packed = packed.detach().cpu().numpy()
             if progress:
                 progress(offset, len(starts), "Writing windows")
-            filename = f"processed/data/{episode}_{offset:08d}.bin"
+            folder = {"val": "valid"}.get(split, split) if self.flat_processed else "processed/data"
+            filename = f"{folder}/{episode}_{offset:08d}.bin"
             self._binary(filename, packed)
             shards.append({"path": filename, "shape": list(packed.shape)})
             count += len(packed)
@@ -375,10 +387,10 @@ class DatasetWriter:
         cfg = self.config
         if self.manifest["provenance"].get("pipeline") == "wheeledlab_batched_v1":
             return  # The copied DataCollector writes the full WheeledLab metadata.
-        # Both raw generation and assembled datasets keep viewer-readable raw metadata.
-        write_json(self.root / "metadata/schema.json", RAW_SCHEMA)
-        atomic_text(self.root / "metadata/dataset_config.py",
-                    f"class DatasetConfig:\n    control_dt = {cfg.dt!r}\n    feature_dim = 15\n    num_envs = 1\n")
+        if not self.flat_processed:
+            write_json(self.root / "metadata/schema.json", RAW_SCHEMA)
+            atomic_text(self.root / "metadata/dataset_config.py",
+                        f"class DatasetConfig:\n    control_dt = {cfg.dt!r}\n    feature_dim = 15\n    num_envs = 1\n")
         if not self.process_windows:
             return
         shards = [s for e in self.manifest["episodes"].values() for s in e["shards"]]
@@ -392,33 +404,56 @@ class DatasetWriter:
                   "num_files": len(counts), "total_chunks": sum(counts), "chunks_per_file_list": counts}
         text = '"""FKD-compatible dimensions; use manifest.json for session-disjoint splits."""\n'
         text += "class ProcessedDatasetConfig:\n" + "".join(f"    {k} = {v!r}\n" for k, v in fields.items())
-        atomic_text(self.root / "processed/metadata/dataset_config.py", text)
-        write_json(self.root / "processed/metadata/schema.json", {**SCHEMA, **fields})
+        metadata = self.root / ("metadata" if self.flat_processed else "processed/metadata")
+        atomic_text(metadata / "dataset_config.py", text)
+        write_json(metadata / "schema.json", {**SCHEMA, **fields})
 
 
 class FKDDataset(Dataset):
-    def __init__(self, roots, config, split="train", sources=None):
+    def __init__(self, roots, config, split="train", sources=None, allow_wheeledlab=False):
         if isinstance(roots, (str, Path)):
             roots = [roots]
+        if split not in ("train", "val", "test", "all"):
+            raise ValueError("split must be train, val, test, or all")
+        roots = [Path(root).expanduser().resolve() for root in roots]
         self.config, self.shards, self.ends = config, [], []
         self.cache = OrderedDict()
-        seen = set()
+        self.dataset_paths = roots
+        self.dataset_file_mapping, self.shard_splits = [], []
+        self._seen_files = set()
+        documents = {}
         sessions = {}
         calibrations = set()
-        for root in roots:
-            root = Path(root).expanduser().resolve()
+        for dataset_idx, root in enumerate(roots):
+            if not root.is_dir():
+                raise ValueError(f"Dataset directory does not exist: {root}")
             manifests = [root / "manifest.json"] if (root / "manifest.json").exists() else sorted(root.rglob("manifest.json"))
+            if not manifests:
+                # A user can select processed/, data/, or one saved split.
+                # Keep the ancestor's declared dimensions and recorded splits.
+                for parent in root.parents:
+                    candidate = parent / "manifest.json"
+                    if not candidate.is_file():
+                        continue
+                    doc = json.loads(candidate.read_text())
+                    if "episodes" in doc and doc.get("schema", {}).get("features") == 42:
+                        documents[candidate] = doc
+                        manifests = [candidate]
+                        break
             for path in manifests:
-                if path in seen:
-                    continue
-                seen.add(path)
-                doc = json.loads(path.read_text())
+                if path not in documents:
+                    documents[path] = json.loads(path.read_text())
+                doc = documents[path]
                 if "schema" not in doc or "episodes" not in doc:
                     continue
                 if sources and doc["source"] not in sources:
                     continue
+                if allow_wheeledlab and not doc.get("process_windows", True):
+                    continue
                 if doc["schema"].get("features") != 42 or doc["schema"].get("dtype") != "float32":
                     raise ValueError(f"Unsupported feature layout in {path}")
+                if doc["schema"].get("quaternion_order", "wxyz") != "wxyz":
+                    raise ValueError(f"Unsupported quaternion order in {path}; expected wxyz")
                 provenance = doc.get("provenance", {})
                 for calibration in [provenance.get("calibration", {}), *provenance.get("calibrations", [])]:
                     if calibration.get("session"):
@@ -433,20 +468,38 @@ class FKDDataset(Dataset):
                     if identity in sessions and sessions[identity] != episode["split"]:
                         raise ValueError(f"Session leakage across splits: {identity}")
                     sessions[identity] = episode["split"]
-                    if episode["split"] != split:
+                    if split != "all" and episode["split"] != split:
                         continue
                     for shard in episode["shards"]:
-                        self._append(path.parent / shard["path"], tuple(shard["shape"]), doc["source"], doc["terrain"])
+                        file = (path.parent / shard["path"]).resolve()
+                        if file.is_relative_to(root):
+                            self._append(file, tuple(shard["shape"]), doc["source"], doc["terrain"], dataset_idx, episode["split"])
                 for shard in doc.get("processed_shards", []):
                     if shard["split"] not in ("train", "val", "test"):
                         raise ValueError(f"Invalid processed shard split in {path}")
-                    if shard["split"] == split:
-                        self._append(path.parent / shard["path"], tuple(shard["shape"]), doc["source"], doc["terrain"])
+                    file = (path.parent / shard["path"]).resolve()
+                    if (split == "all" or shard["split"] == split) and file.is_relative_to(root):
+                        self._append(file, tuple(shard["shape"]), doc["source"], doc["terrain"], dataset_idx, shard["split"])
             if not manifests:
+                if allow_wheeledlab:
+                    # WheeledLab FKDDataset._load_file_names uses entered path
+                    # order, sorted data/*.bin, then direct *.bin as fallback.
+                    folder = root / "data" if (root / "data").is_dir() else root
+                    bins = sorted(folder.glob("*.bin"))
+                    if bins:
+                        if split != "all":
+                            raise ValueError("WheeledLab bins have no recorded split; choose all to view them")
+                        for file in bins:
+                            count, remainder = divmod(file.stat().st_size, config.window_steps * 42 * 4)
+                            if remainder:
+                                raise ValueError(f"Invalid binary size: {file}")
+                            self._append(file, (count, config.window_steps, 42), "wheeledlab", "unknown", dataset_idx, None)
+                        continue
                 # External generalist data must already be split by episode/session.
                 # Its layout is declared with a schema.json, never inferred silently.
                 metadata = root / "schema.json"
-                bins = sorted((root / split).rglob("*.bin"))
+                bins = [(file, name) for name in (("train", "val", "test") if split == "all" else (split,))
+                        for file in sorted((root / name).rglob("*.bin"))]
                 if bins and not metadata.exists():
                     raise ValueError(f"External FKD data requires {metadata}; see README")
                 if bins:
@@ -456,43 +509,87 @@ class FKDDataset(Dataset):
                                         "dtype": "float32", "session_disjoint_splits": True}.items():
                         if doc.get(k) != expected:
                             raise ValueError(f"{metadata}: expected {k}={expected}")
-                    for path in bins:
+                    for path, saved_split in bins:
                         count, remainder = divmod(path.stat().st_size, config.window_steps * 42 * 4)
                         if remainder:
                             raise ValueError(f"Invalid binary size: {path}")
-                        self._append(path, (count, config.window_steps, 42), "generalist", "generalist")
+                        self._append(path, (count, config.window_steps, 42), "generalist", "generalist", dataset_idx, saved_split)
         for session in calibrations:
             if ("real", session) in sessions and sessions[("real", session)] != "train":
                 raise ValueError(f"DBM calibration used held-out session {session}")
         if not self.shards:
             raise ValueError(f"No {split} windows found in {roots}. Supply data with complete-session splits.")
 
-    def _append(self, path, shape, source, terrain):
+    def _append(self, path, shape, source, terrain, dataset_idx=0, split=None):
+        path = Path(path).resolve()
+        if path in self._seen_files:
+            return
         if len(shape) != 3 or shape[1:] != (self.config.window_steps, 42):
             raise ValueError(f"Invalid shard shape: {path} {shape}")
         if path.stat().st_size != int(np.prod(shape)) * 4:
             raise ValueError(f"Incomplete or malformed shard: {path}")
         if shape[0]:
+            self._seen_files.add(path)
             self.shards.append((path, shape, source, terrain))
             self.ends.append((self.ends[-1] if self.ends else 0) + shape[0])
+            self.dataset_file_mapping.append(dataset_idx)
+            self.shard_splits.append(split)
 
     def __len__(self):
         return self.ends[-1]
 
-    def __getitem__(self, index):
+    def locate_window(self, index):
+        """Locate a global trajectory index using WheeledLab's file ordering."""
+        index = operator.index(index)
         if not 0 <= index < len(self):
             raise IndexError(index)
         shard = bisect_right(self.ends, index)
         path, shape, source, terrain = self.shards[shard]
         start = self.ends[shard - 1] if shard else 0
+        return {"path": str(path), "file_index": shard, "window_index": index - start,
+                "dataset_idx": self.dataset_file_mapping[shard], "source": source, "terrain": terrain,
+                "split": self.shard_splits[shard]}
+
+    def load_window(self, index):
+        """Read one stored [time,42] window through the training loader's mmap."""
+        location = self.locate_window(index)
+        shard = location["file_index"]
+        path, shape, _, _ = self.shards[shard]
         if shard not in self.cache:
             self.cache[shard] = np.memmap(path, dtype=np.float32, mode="r", shape=shape)
             if len(self.cache) > 16:
                 self.cache.popitem(last=False)
         self.cache.move_to_end(shard)
-        window = torch.from_numpy(np.array(self.cache[shard][index - start], copy=True))
+        return torch.from_numpy(np.array(self.cache[shard][location["window_index"]], copy=True))
+
+    def get_fkd_sample(self, index):
+        """WheeledLab FKDDataset.__getitem__ for its standard 42-column format.
+
+        The current state is shared by history and future. Its future delta
+        starts at identity, as in WheeledLab, without changing stored data.
+        """
+        data = self.load_window(index)
+        current = self.config.history_steps - 1
+        world, body, delta = data[:, :13], data[:, 13:26], data[:, 26:39]
+        actions = data[:, 39:41]
+        delta_future = delta[current:].clone()
+        delta_future[0, :3] = 0.0
+        delta_future[0, 3:7] = data.new_tensor([1.0, 0.0, 0.0, 0.0])
+        return {"history": body[:current + 1].clone(), "future": body[current:].clone(),
+                "future_actions": actions[current:], "history_actions": actions[:current + 1],
+                "delta_history": delta[:current + 1], "delta_future": delta_future,
+                "hmap": data.new_zeros((1, 1)), "vel_body": body[current:current + 1, 7:10],
+                "ang_vel_body": body[current:current + 1, 10:13],
+                "pos_world": world[current, :3], "quat_wrt_world": world[current, 3:7],
+                "vel_wrt_world": world[current, 7:10], "angvel_wrt_world": world[current, 10:13],
+                "dataset_idx": self.locate_window(index)["dataset_idx"], "car_number": data[0, 41].long(),
+                "full_wf_states": world, "full_bf_states": body, "full_delta_states": delta, "full_data": data}
+
+    def __getitem__(self, index):
+        window = self.load_window(index)
         result = model_sample(window, self.config.history_steps)
-        result["terrain"], result["source"] = terrain, source
+        location = self.locate_window(index)
+        result["terrain"], result["source"] = location["terrain"], location["source"]
         return result
 
     def __getstate__(self):

@@ -24,6 +24,7 @@ from optcar.models.fkd_transformer import load_checkpoint, predict_window, traje
 from optcar.utils.file_io import read_config, safe_name, terrain_path, write_yaml
 from optcar.utils.math import qinverse_torch, qrotate_torch, yaw_from_quat_torch
 from optcar.utils.devices import available_devices
+from optcar.gui.dataset_viewer import DatasetViewer
 
 
 def create_app(dataset_root="datasets", bag_root=None):
@@ -36,6 +37,7 @@ def create_app(dataset_root="datasets", bag_root=None):
     (root / "generalist_dataset").mkdir(parents=True, exist_ok=True)
     sessions, jobs = {}, {}
     generation_jobs = GenerationJobs(root)
+    dataset_viewer = DatasetViewer()
     lock = threading.RLock()
     pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="optcar")
 
@@ -140,6 +142,18 @@ def create_app(dataset_root="datasets", bag_root=None):
     def raw_bin_actions():
         payload = request.get_json()
         return action_window(payload["path"], payload["index"], payload["before_s"], payload["after_s"], **bin_options(payload))
+
+    @app.post("/api/dataset-viewer/open")
+    @api
+    def open_processed_dataset():
+        payload = request.get_json()
+        return dataset_viewer.open(payload.get("roots"), payload.get("config_path"), payload.get("split", "train"))
+
+    @app.post("/api/dataset-viewer/sample")
+    @api
+    def processed_dataset_sample():
+        payload = request.get_json()
+        return dataset_viewer.sample(payload.get("dataset_id"), payload.get("index"))
 
     @app.get("/api/defaults")
     @api

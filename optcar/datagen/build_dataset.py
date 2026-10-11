@@ -153,7 +153,7 @@ class _BuildCancelled(Exception):
 def _check_output_files(root, grouped, data):
     """Check the files this build writes; unrelated files can share the folder."""
     for (terrain, kind), entries in grouped.items():
-        target = root / terrain / kind
+        target = root / kind / terrain
         manifest = target / "manifest.json"
         provenance = {"inputs": entries, "calibrations": [e["calibration"] for e in entries if e["calibration"]]}
         written = set()
@@ -161,34 +161,28 @@ def _check_output_files(root, grouped, data):
         if manifest.exists():
             doc = json.loads(manifest.read_text())
             if (doc.get("config"), doc.get("source"), doc.get("terrain"), doc.get("provenance"),
-                doc.get("process_windows", True)) != (asdict(data), kind, terrain, provenance, True):
+                doc.get("process_windows", True), doc.get("flat_processed", False)) != (asdict(data), kind, terrain, provenance, True, True):
                 raise ValueError(f"Dataset files already exist at {target} with different inputs or settings")
             written = {shard["path"] for shard in doc.get("processed_shards", [])}
             for shard in doc.get("processed_shards", []):
                 counts[shard["split"]] += 1
         else:
-            for relative in ("metadata/schema.json", "metadata/dataset_config.py",
-                             "processed/metadata/schema.json", "processed/metadata/dataset_config.py"):
+            for relative in ("metadata/schema.json", "metadata/dataset_config.py"):
                 path = target / relative
                 if path.exists():
                     raise ValueError(f"Output would replace an existing file: {path}")
         for split in ("train", "val", "test"):
             windows = sum(entry["estimated_windows"] for entry in entries if entry["split"] == split)
             for index in range(counts[split] + math.ceil(windows / data.shard_windows)):
-                relative = f"processed/data/{split}/processed_{index:010d}.bin"
+                relative = DatasetWriter.processed_filename(split, index, flat_processed=True)
                 path = target / relative
                 if relative not in written and (path.exists() or path.with_suffix(".bin.tmp").exists()):
                     raise ValueError(f"Output would replace an existing file: {path}")
 
 
 def build_output(output, sources):
-    root = Path(output).expanduser().resolve()
-    for source in sources:
-        path = Path(source["path"]).expanduser().resolve()
-        base = path.parent if path.is_file() else path
-        if base.is_relative_to(root):
-            return root / "processed"
-    return root
+    """Always build <chosen folder>/processed/source/terrain/split."""
+    return Path(output).expanduser().resolve() / "processed"
 
 
 def load_files_parallel(entries, max_workers=16, cancelled=None):
@@ -244,7 +238,8 @@ def build_dataset(output, sources, data=None, seed=42, fractions=(.8, .1, .1), p
     root = build_output(output, sources)
     if root.exists() and not root.is_dir():
         raise ValueError("Dataset output must be a folder")
-    identity = {"config": plan["config"], "bins": plan["bins"], "seed": seed, "fractions": list(fractions)}
+    identity = {"output_layout": "source_terrain_split_v1", "config": plan["config"],
+                "bins": plan["bins"], "seed": seed, "fractions": list(fractions)}
     index = root / "dataset_build.json"
     root.mkdir(parents=True, exist_ok=True)
     import fcntl
@@ -253,8 +248,12 @@ def build_dataset(output, sources, data=None, seed=42, fractions=(.8, .1, .1), p
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
             raise ValueError("Another dataset builder is writing this folder") from error
-        if index.exists() and json.loads(index.read_text()) != identity:
-            raise ValueError("Inputs or settings changed; choose a new output folder")
+        if index.exists():
+            previous = json.loads(index.read_text())
+            if previous.get("output_layout") != identity["output_layout"]:
+                raise ValueError("This folder contains the older nested output layout; use an empty output folder for the new layout")
+            if previous != identity:
+                raise ValueError("Inputs or settings changed; choose a new output folder")
         grouped = defaultdict(list)
         for entry in plan["bins"]:
             grouped[entry["terrain"], entry["source"]].append(entry)
@@ -270,7 +269,7 @@ def build_dataset(output, sources, data=None, seed=42, fractions=(.8, .1, .1), p
         for (terrain, kind), entries in grouped.items():
             provenance = {"inputs": entries, "calibrations": [e["calibration"] for e in entries if e["calibration"]]}
             report(f"Loading bins · {workers} file loading workers")
-            with DatasetWriter(root / terrain / kind, data, kind, terrain, provenance) as writer, \
+            with DatasetWriter(root / kind / terrain, data, kind, terrain, provenance, flat_processed=True) as writer, \
                     closing(load_files_parallel(entries, workers, cancelled)) as loaded:
                 for entry, rows in loaded:
                     if cancelled and cancelled():
