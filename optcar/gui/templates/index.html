@@ -138,7 +138,7 @@
     <div id="generation-range-grid" class="generation-range-grid" aria-label="Parameter ranges"></div>
     <div class="generation-range-footer"><p id="generation-ranges-status" class="hint" role="status">All parameters use the saved preset.</p><span class="hint">Vehicle values are shared within a batch; command biases vary per trajectory.</span></div>
   </section>
-  <section class="generation-progress"><span class="eyebrow">GENERATION PROGRESS</span><div id="generation-jobs" class="jobs">No generation started.</div></section>
+  <section class="generation-progress generation-dashboard"><div class="section-heading"><div><span class="eyebrow">COLLECTION DASHBOARD</span><h2>Generation runs</h2></div><div class="generation-range-toolbar"><span id="generation-runs-summary" class="muted"></span><button id="generation-runs-refresh" class="secondary">Refresh runs</button></div></div><p class="hint">Each collection runs in its own tmux session and continues when the GUI is closed. Attach from a terminal to monitor it.</p><div id="generation-jobs" class="generation-run-grid">No tmux collections yet.</div></section>
   <div id="generation-next" class="button-row" hidden><button id="generation-view" class="secondary">Visualize synthetic data</button><button id="generation-build" class="primary">Use in dataset builder</button></div>
   <div id="generation-status" role="status">Ready. Use a new run name when changing collection settings.</div>
   <section class="dataset-section"><div class="section-heading"><div><span class="eyebrow">DATA LIBRARY</span><h2>Terrain collections</h2></div><button id="refresh-data" class="secondary">Refresh</button></div><div id="dataset-tree" class="dataset-tree">No generated collections yet.</div></section>
@@ -241,5 +241,6 @@
 <script src="{{ url_for('static', filename='bin_explorer.js') }}"></script>
 <script src="{{ url_for('static', filename='raw_bins.js') }}"></script>
 <script src="{{ url_for('static', filename='dataset_builder.js') }}"></script>
+<script src="{{ url_for('static', filename='generation_runs.js') }}"></script>
 </body>
 </html>

@@ -1,4 +1,5 @@
-# One dependency file, including the official GPU-enabled Torch build.
+# Runtime dependencies, including the official GPU-enabled Torch build.
+# tmux is installed by environment.yml / scripts/setup_env.sh.
 --extra-index-url https://download.pytorch.org/whl/cu128
 numpy>=1.24,<3
 scipy>=1.10,<2
@@ -8,3 +9,4 @@ rosbags>=0.11,<0.12
 rich>=13,<15
 torch==2.11.0+cu128
 joblib>=1.4,<2
+matplotlib>=3.8,<4

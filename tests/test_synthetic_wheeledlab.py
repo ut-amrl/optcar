@@ -281,7 +281,6 @@ def test_invalid_ranges_fail_before_output(tmp_path,ranges):
 
 
 def test_gui_generation_parameter_ranges(tmp_path,monkeypatch):
-    from threading import Event
     from optcar.gui import server
     from optcar.utils.file_io import write_yaml,terrain_path
     client=server.create_app(tmp_path/'datasets').test_client()
@@ -290,13 +289,14 @@ def test_gui_generation_parameter_ranges(tmp_path,monkeypatch):
     defaults=client.get('/api/defaults').json
     assert 'steer_pos_multiplier' in {item['key'] for item in defaults['generation_parameters']}
     write_yaml(terrain_path(tmp_path/'datasets','road')/'dbm_params.yaml',{'params':asdict(DBMParams())})
-    called=[];done=Event()
-    def fake_generate(*args,**kwargs):
-        called.append(args[4]);done.set();return {'completed':0,'total':0}
-    monkeypatch.setattr(server,'generate',fake_generate)
+    called=[]
+    def fake_start(self, terrain, run, **kwargs):
+        called.append(CommandConfig(**kwargs['commands']))
+        return {'job_id':'a'*32,'tmux_session':'optcar-test','attach_command':'tmux attach -t optcar-test'}
+    monkeypatch.setattr(server.GenerationJobs,'start',fake_start)
     response=client.post('/api/generate',json={'terrain':'road','commands':{'parameter_ranges':ranges,
         'resample_params_each_run':True,'bezier_full_range':False}})
-    assert response.status_code==200 and done.wait(2)
+    assert response.status_code==200 and response.json['tmux_session']=='optcar-test'
     assert called[0].parameter_ranges==ranges and called[0].bezier_full_range is False
 
 

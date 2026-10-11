@@ -1,6 +1,5 @@
 """Hardware inventory and indexed routing, without generating user collections."""
 from dataclasses import asdict
-from threading import Event
 from types import SimpleNamespace
 
 import pytest
@@ -62,16 +61,20 @@ def test_gui_passes_selected_gpu_and_rejects_missing_gpu(tmp_path, monkeypatch, 
     from optcar.models.dynamic_bicycle import DBMParams
     from optcar.utils.file_io import terrain_path, write_yaml
     write_yaml(terrain_path(tmp_path, "road") / "dbm_params.yaml", {"params": asdict(DBMParams())})
-    called, done = [], Event()
-    def fake_generate(*args, **kwargs):
-        called.append(kwargs["device"])
-        done.set()
-        return {"completed": 0, "total": 0}
-    monkeypatch.setattr(server, "generate", fake_generate)
+    from optcar.datagen import generation_jobs
+    import json
+    called=[]
+    def fake_tmux(argv,**kwargs):
+        if argv[1]=='new-session':
+            called.append(argv)
+        return SimpleNamespace(stdout='',stderr='',returncode=0)
+    monkeypatch.setattr(generation_jobs.shutil,'which',lambda _: '/test/tmux')
+    monkeypatch.setattr(generation_jobs.subprocess,'run',fake_tmux)
     client = server.create_app(tmp_path).test_client()
     response = client.post("/api/generate", json={"terrain": "road", "device": "cuda:1", "raw_only": True})
-    assert response.status_code == 200 and done.wait(timeout=2)
-    assert called == ["cuda:1"]
+    assert response.status_code == 200 and len(called)==1
+    record=json.loads((tmp_path/'.generation_jobs'/response.json['job_id']/'status.json').read_text())
+    assert record['device']=='cuda:1'
     response = client.post("/api/generate", json={"terrain": "road", "device": "cuda:2"})
     assert response.status_code == 400 and "unavailable" in response.json["error"]
-    assert called == ["cuda:1"]
+    assert len(called)==1

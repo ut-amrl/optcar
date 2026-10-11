@@ -4,5 +4,6 @@ channels:
 dependencies:
   - python=3.11
   - pip
+  - tmux
 # scripts/setup_env.sh installs the GPU-enabled requirements.txt and editable
 # package, then detects and verifies every NVIDIA GPU visible to Torch.

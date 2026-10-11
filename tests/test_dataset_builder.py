@@ -103,19 +103,16 @@ def test_builder_inspection_api_and_generation_mode(tmp_path,monkeypatch):
     assert response.status_code==200 and response.json['files']==1
     assert client.post('/api/dataset-builder/inspect',json={'sources':[]}).status_code==400
     called=[]
-    def fake_generate(*args,**kwargs):
-        called.append(kwargs['process_windows'])
-        return {'dataset':str(args[0]),'completed':0,'total':0,'new_windows':0}
-    monkeypatch.setattr(server,'generate',fake_generate)
+    def fake_start(self,terrain,run,**kwargs):
+        called.append((terrain,run))
+        return {'job_id':'a'*32,'tmux_session':'optcar-test'}
+    monkeypatch.setattr(server.GenerationJobs,'start',fake_start)
     write_yaml(terrain_path(tmp_path/'datasets','road')/'dbm_params.yaml',{'params':asdict(DBMParams())})
     response=client.post('/api/generate',json={'terrain':'road','raw_only':True})
-    assert response.status_code==200
-    import time
-    for _ in range(100):
-        if client.get('/api/jobs/'+response.json['job_id']).json['status']=='complete':
-            break
-        time.sleep(.01)
-    assert called==[False]
+    assert response.status_code==200 and response.json['tmux_session']=='optcar-test'
+    assert called==[('road','default')]
+    assert client.post('/api/generate',json={'terrain':'road','raw_only':False}).status_code==400
+    assert len(called)==1
 
 
 def test_full_rotation_and_delta_reconstruction():

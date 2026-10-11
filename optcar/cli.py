@@ -53,7 +53,7 @@ def main(argv=None):
     raw.add_argument("--include-cmd-vel", action=argparse.BooleanOptionalAction, default=None)
     raw.add_argument("--overwrite", action="store_true", help="Replace only selected bags' bins")
 
-    generate = commands.add_parser("generate", help="Generate DBM training data")
+    generate = commands.add_parser("generate", help="Start a synthetic raw-bin collection in tmux")
     generate.add_argument("--config", default="configs/datagen.yaml")
     generate.add_argument("--params", help="DBM YAML; defaults to the terrain's saved preset")
     generate.add_argument("--terrain", required=True)
@@ -140,23 +140,19 @@ def _dispatch(args):
         _print(topics(args.bag))
     elif args.command == "generate":
         from optcar.dataset import DataConfig
-        from optcar.datagen.dbm_to_dataset import CommandConfig, generate
+        from optcar.datagen.dbm_to_dataset import CommandConfig
+        from optcar.datagen.generation_jobs import GenerationJobs
         terrain = terrain_path(args.dataset_root, args.terrain)
         target_preset = terrain / "dbm_params.yaml"
         cfg = read_config(args.config)
         preset = read_config(args.params or target_preset)
         if not target_preset.exists():
             write_yaml(target_preset, preset)
-        from rich.progress import Progress
-        with Progress() as progress:
-            task = progress.add_task("Collecting synthetic batches", total=None)
-            result = generate(terrain / "sim" / safe_name(args.run), args.terrain, preset.get("params", preset),
-                DataConfig(**cfg.get("data", {})), CommandConfig(**cfg.get("commands", {})),
-                runs=args.runs if args.runs is not None else cfg.get("runs", cfg.get("episodes", 10)),
-                batch_size=args.batch_size if args.batch_size is not None else cfg.get("batch_size", 32),
-                device=args.device or cfg.get("device", "cpu"), fractions=cfg.get("fractions", [0.8, 0.1, 0.1]),
-                progress=lambda p: progress.update(task, completed=p["completed"], total=p["total"], description=p["current"]),
-                calibration=preset.get("calibration"), process_windows=False)
+        result = GenerationJobs(args.dataset_root).start(args.terrain, args.run,
+            data=DataConfig(**cfg.get("data", {})), commands=CommandConfig(**cfg.get("commands", {})),
+            runs=args.runs if args.runs is not None else cfg.get("runs", cfg.get("episodes", 10)),
+            batch_size=args.batch_size if args.batch_size is not None else cfg.get("batch_size", 32),
+            device=args.device or cfg.get("device", "cpu"), preset=preset, fractions=cfg.get("fractions", [.8, .1, .1]))
         _print(result)
     elif args.command == "build-dataset":
         from optcar.dataset import DataConfig

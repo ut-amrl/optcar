@@ -15,14 +15,15 @@ from optcar.dataset import DataConfig
 from optcar.datagen.rosbag_to_dataset import BagConfig, export_bag, load_bag, topics
 from optcar.datagen.raw_bins import scan_bins, inspect_bin, bin_frame, action_window
 from optcar.datagen.raw_bags import RawBagConfig, convert_raw_bags, discover_bags
-from optcar.datagen.dbm_to_dataset import CommandConfig, generate, randomization_parameters
+from optcar.datagen.dbm_to_dataset import CommandConfig, randomization_parameters
+from optcar.datagen.generation_jobs import GenerationJobs
 from optcar.datagen.build_dataset import build_dataset, inspect_sources
 from optcar.models.dbm_calibration import DEFAULT_FIT_KEYS, fit_parameters, wheel_history
 from optcar.models.dynamic_bicycle import DBMParams, DynamicBicycleModel
 from optcar.models.fkd_transformer import load_checkpoint, predict_window, trajectory_metrics
 from optcar.utils.file_io import read_config, safe_name, terrain_path, write_yaml
 from optcar.utils.math import qinverse_torch, qrotate_torch, yaw_from_quat_torch
-from optcar.utils.devices import available_devices, resolve_device
+from optcar.utils.devices import available_devices
 
 
 def create_app(dataset_root="datasets", bag_root=None):
@@ -34,6 +35,7 @@ def create_app(dataset_root="datasets", bag_root=None):
     app.config["DBM_CONFIG_ROOT"] = str(root / "dbm")
     (root / "generalist_dataset").mkdir(parents=True, exist_ok=True)
     sessions, jobs = {}, {}
+    generation_jobs = GenerationJobs(root)
     lock = threading.RLock()
     pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="optcar")
 
@@ -269,15 +271,17 @@ def create_app(dataset_root="datasets", bag_root=None):
     @api
     def generate_data():
         payload = request.get_json()
-        device = resolve_device(payload.get("device", "cpu"))
-        terrain = terrain_path(root, payload["terrain"])
-        preset = read_config(terrain / "dbm_params.yaml")
-        path = terrain / "sim" / safe_name(payload.get("run", "default"))
-        return start_job(lambda progress, cancelled: generate(path, payload["terrain"], preset["params"],
-            DataConfig(**payload.get("data", {})), CommandConfig(**payload.get("commands", {})),
-            runs=int(payload.get("runs", payload.get("episodes", 10))), batch_size=int(payload.get("batch_size", 32)),
-            device=device, progress=progress, cancelled=cancelled,
-            calibration=preset.get("calibration"), process_windows=not payload.get("raw_only", True)))
+        if not payload.get("raw_only", True):
+            raise ValueError("Use Dataset builder to create training windows")
+        return generation_jobs.start(payload["terrain"], payload.get("run", "default"),
+            data=payload.get("data"), commands=payload.get("commands"),
+            runs=payload.get("runs", payload.get("episodes", 10)), batch_size=payload.get("batch_size", 32),
+            device=payload.get("device", "cpu"))
+
+    @app.get("/api/generation/runs")
+    @api
+    def generation_runs():
+        return {"runs": generation_jobs.list()}
 
     @app.post("/api/dataset-builder/inspect")
     @api
@@ -297,12 +301,16 @@ def create_app(dataset_root="datasets", bag_root=None):
     @app.get("/api/jobs/<identifier>")
     @api
     def job_status(identifier):
+        if generation_jobs.exists(identifier):
+            return generation_jobs.get(identifier)
         with lock:
             return dict(jobs[identifier])
 
     @app.post("/api/jobs/<identifier>/cancel")
     @api
     def cancel_job(identifier):
+        if generation_jobs.exists(identifier):
+            return generation_jobs.cancel(identifier)
         with lock:
             jobs[identifier]["cancel"] = True
         return {"status": "cancellation requested"}
