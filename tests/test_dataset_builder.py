@@ -485,3 +485,70 @@ def test_failed_next_input_flushes_previous_carried_windows(tmp_path):
     assert len(manifest['episodes'])==1
     assert all(e['windows']==e['stored_windows']==6 for e in manifest['episodes'].values())
     assert len(FKDDataset(tmp_path/'built',cfg))==6
+
+
+def test_disjoint_real_source_appends_without_changing_completed_sim_data(tmp_path):
+    sim_file, _ = raw_fixture(tmp_path / 'sim_inputs', environments=2, source='/bags/sim')
+    real_file, _ = raw_fixture(tmp_path / 'real_inputs', environments=2, source='/bags/real')
+    output = tmp_path / 'assembled'
+    sim_config = DataConfig(history_steps=4, future_steps=3, stride=2, shard_windows=2)
+    real_config = DataConfig(history_steps=4, future_steps=3, stride=1, shard_windows=2)
+    sim_source = spec(sim_file.parent, source='sim')
+    real_source = spec(real_file.parent, source='real')
+    sim_result = build_dataset(output, [sim_source], sim_config, device='cpu')
+    assert sim_result['new_windows'] == 6
+    root = output / 'processed'
+
+    def snapshot(folder):
+        return {path: (path.read_bytes(), path.stat().st_ino, path.stat().st_size, path.stat().st_mtime_ns)
+                for path in folder.rglob('*') if path.is_file()}
+
+    sim_original = snapshot(root / 'sim')
+    index = root / 'dataset_build.json'
+    index_original = (index.read_bytes(), index.stat().st_ino, index.stat().st_size, index.stat().st_mtime_ns)
+    real_result = build_dataset(output, [real_source], real_config, device='cpu')
+    assert real_result['dataset'] == sim_result['dataset'] == str(root)
+    assert real_result['new_windows'] == 12
+    assert snapshot(root / 'sim') == sim_original
+    assert (index.read_bytes(), index.stat().st_ino, index.stat().st_size, index.stat().st_mtime_ns) == index_original
+    sim_manifest = json.loads((root / 'sim' / 'road' / 'manifest.json').read_text())
+    real_manifest = json.loads((root / 'real' / 'road' / 'manifest.json').read_text())
+    assert sim_manifest['config']['stride'] == 2 and real_manifest['config']['stride'] == 1
+    assert len(list((root / 'real' / 'road' / 'train').glob('*.bin'))) == 6
+    assert sum(shard['shape'][0] for shard in real_manifest['processed_shards']) == 12
+    assert all(shard['shape'][1:] == [7, 42] for shard in real_manifest['processed_shards'])
+    assert len(FKDDataset(root, sim_config)) == 18
+    assert len(FKDDataset(root, real_config)) == 18
+
+    completed = snapshot(root)
+    for source, config in ((sim_source, sim_config), (real_source, real_config)):
+        repeated = build_dataset(output, [source], config, device='cpu')
+        assert repeated['new_windows'] == 0 and repeated['completed'] == 1
+        assert snapshot(root) == completed
+    changed = DataConfig(history_steps=4, future_steps=3, stride=1, shard_windows=2)
+    with pytest.raises(ValueError, match='Inputs or settings changed for'):
+        build_dataset(output, [sim_source], changed, device='cpu')
+    assert snapshot(root) == completed
+    sim_file.with_name('extra.bin').write_bytes(sim_file.read_bytes())
+    with pytest.raises(ValueError, match='Inputs or settings changed for'):
+        build_dataset(output, [sim_source], sim_config, device='cpu')
+    assert snapshot(root) == completed
+
+
+@pytest.mark.parametrize('history,future,dt', [(3, 4, .02), (4, 3, .04)])
+def test_disjoint_source_rejects_incompatible_training_dimensions_without_writes(tmp_path, history, future, dt):
+    sim_file, _ = raw_fixture(tmp_path / 'sim_inputs', source='/bags/sim')
+    real_file, _ = raw_fixture(tmp_path / 'real_inputs', source='/bags/real', dt=dt)
+    output = tmp_path / 'assembled'
+    sim_config = DataConfig(history_steps=4, future_steps=3, dt=.02, stride=2, shard_windows=2)
+    build_dataset(output, [spec(sim_file, source='sim')], sim_config, device='cpu')
+    root = output / 'processed'
+    original = {path: (path.read_bytes(), path.stat().st_ino, path.stat().st_size, path.stat().st_mtime_ns)
+                for path in root.rglob('*') if path.is_file()}
+    real_config = DataConfig(history_steps=history, future_steps=future, dt=dt, stride=1, shard_windows=3)
+    assert real_config.window_steps == sim_config.window_steps == 7
+    with pytest.raises(ValueError, match='(?i)history|future|timestep|training'):
+        build_dataset(output, [spec(real_file, source='real')], real_config, device='cpu')
+    assert not (root / 'real').exists()
+    assert {path: (path.read_bytes(), path.stat().st_ino, path.stat().st_size, path.stat().st_mtime_ns)
+            for path in root.rglob('*') if path.is_file()} == original

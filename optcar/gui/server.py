@@ -321,6 +321,11 @@ def create_app(dataset_root="datasets", bag_root=None):
     def build_runs():
         return {"runs": generation_jobs.list("dataset_build")}
 
+    @app.post("/api/dataset-builder/clear-finished")
+    @api
+    def clear_build_runs():
+        return generation_jobs.clear_finished_builds()
+
     @app.post("/api/dataset-builder/inspect")
     @api
     def inspect_dataset_sources():

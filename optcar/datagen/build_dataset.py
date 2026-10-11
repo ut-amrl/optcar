@@ -162,7 +162,7 @@ def _check_output_files(root, grouped, data):
             doc = json.loads(manifest.read_text())
             if (doc.get("config"), doc.get("source"), doc.get("terrain"), doc.get("provenance"),
                 doc.get("process_windows", True), doc.get("flat_processed", False)) != (asdict(data), kind, terrain, provenance, True, True):
-                raise ValueError(f"Dataset files already exist at {target} with different inputs or settings")
+                raise ValueError(f"Inputs or settings changed for {target}; choose a new output folder for this source and terrain")
             written = {shard["path"] for shard in doc.get("processed_shards", [])}
             for shard in doc.get("processed_shards", []):
                 counts[shard["split"]] += 1
@@ -252,13 +252,18 @@ def build_dataset(output, sources, data=None, seed=42, fractions=(.8, .1, .1), p
             previous = json.loads(index.read_text())
             if previous.get("output_layout") != identity["output_layout"]:
                 raise ValueError("This folder contains the older nested output layout; use an empty output folder for the new layout")
-            if previous != identity:
-                raise ValueError("Inputs or settings changed; choose a new output folder")
+            changed = [key for key in ("history_steps", "future_steps", "dt")
+                       if previous["config"][key] != identity["config"][key]]
+            if changed:
+                raise ValueError(f"Training window settings changed ({', '.join(changed)}); choose a different output parent")
         grouped = defaultdict(list)
         for entry in plan["bins"]:
             grouped[entry["terrain"], entry["source"]].append(entry)
         _check_output_files(root, grouped, data)
-        write_json(index, identity)
+        # Keep the first build record. Each source/terrain manifest validates
+        # its own inputs and settings, allowing separate groups to share a root.
+        if not index.exists():
+            write_json(index, identity)
         completed, windows, skipped, done_windows = 0, 0, [], 0
         total_windows = sum(plan["windows"].values())
         def report(current, within=0):

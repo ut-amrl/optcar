@@ -134,24 +134,42 @@ invalidateBuilder();
 
 // Reuse the generation dashboard's cards and tmux controls for dataset builds.
 const builderRunCards=new Map();
-let builderRunsBusy=false;
-async function refreshBuilderRuns(){
-  if(builderRunsBusy)return;
-  builderRunsBusy=true;
-  try{
-    const {runs}=await api('/api/dataset-builder/runs'),container=$('builder-jobs');
-    $('builder-runs-summary').textContent=`${runs.filter(generationRunActive).length} active · ${runs.filter(j=>j.status==='complete').length} complete · ${runs.length} total`;
-    if(!runs.length){container.textContent='No tmux builds yet.';return;}
-    if(!builderRunCards.size)container.replaceChildren();
-    let position=0;
-    for(const job of runs){
-      let entry=builderRunCards.get(job.job_id);
-      if(!entry){entry=generationRunCard(job,builderStatus,refreshBuilderRuns);builderRunCards.set(job.job_id,entry);container.append(entry.card);}
-      const current=container.children[position++];if(current!==entry.card)container.insertBefore(entry.card,current||null);
-      updateGenerationRun(entry,job);
-    }
-  }finally{builderRunsBusy=false;}
+let builderRunsRequest=null,builderRunsClearing=false;
+function updateBuilderClearButton(){
+  $('builder-runs-clear').disabled=Boolean(builderRunsRequest)||builderRunsClearing||
+    ![...builderRunCards.values()].some(entry=>!generationRunActive(entry.job));
 }
+function refreshBuilderRuns(){
+  if(builderRunsRequest)return builderRunsRequest;
+  builderRunsRequest=fetchBuilderRuns().finally(()=>{builderRunsRequest=null;updateBuilderClearButton();});
+  updateBuilderClearButton();return builderRunsRequest;
+}
+async function fetchBuilderRuns(){
+  const {runs}=await api('/api/dataset-builder/runs'),container=$('builder-jobs');
+  const present=new Set(runs.map(job=>job.job_id));
+  for(const [id,entry]of builderRunCards){if(!present.has(id)){entry.card.remove();builderRunCards.delete(id);}}
+  $('builder-runs-summary').textContent=`${runs.filter(generationRunActive).length} active · ${runs.filter(j=>j.status==='complete').length} complete · ${runs.length} total`;
+  if(!runs.length){container.textContent='No dataset builds to show.';return;}
+  if(!builderRunCards.size)container.replaceChildren();
+  let position=0;
+  for(const job of runs){
+    let entry=builderRunCards.get(job.job_id);
+    if(!entry){entry=generationRunCard(job,builderStatus,refreshBuilderRuns);builderRunCards.set(job.job_id,entry);container.append(entry.card);}
+    const current=container.children[position++];if(current!==entry.card)container.insertBefore(entry.card,current||null);
+    updateGenerationRun(entry,job);
+  }
+}
+$('builder-runs-clear').onclick=async()=>{
+  builderRunsClearing=true;updateBuilderClearButton();
+  try{
+    await refreshBuilderRuns();
+    const result=await api('/api/dataset-builder/clear-finished',{});
+    if(builderRunsRequest)await builderRunsRequest;
+    await refreshBuilderRuns();
+    builderStatus(`Cleared ${result.cleared} finished build${result.cleared===1?'':'s'}. Active builds and dataset files are kept.`);
+  }catch(error){builderStatus(error.message,true);}
+  finally{builderRunsClearing=false;updateBuilderClearButton();}
+};
 bind('builder-runs-refresh',refreshBuilderRuns);
 bind('builder-refresh-devices',()=>refreshDevices());
 setInterval(()=>{if(state.tab==='builder')refreshBuilderRuns().catch(e=>builderStatus(e.message,true));},2000);

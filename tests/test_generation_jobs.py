@@ -251,3 +251,155 @@ def test_builder_cli_same_tmux_manager(tmp_path, monkeypatch, capsys):
     main(['build-dataset','--config',str(config),'--device','cuda:1','--workers','6','--dataset-root',str(tmp_path/'registry')])
     assert json.loads(capsys.readouterr().out)['tmux_session']=='optcar-build-test'
     assert called[0][0]==tmp_path/'registry' and called[0][3]['device']=='cuda:1' and called[0][3]['workers']==6
+
+
+@pytest.fixture
+def finished_build_registry(tmp_path, monkeypatch):
+    """Durable records only: no process or tmux session is started."""
+    registry = GenerationJobs(tmp_path / 'datasets')
+    output = registry.root / 'curated' / 'processed'
+    output.mkdir(parents=True)
+    np.arange(2 * 5 * 42, dtype=np.float32).reshape(2, 5, 42).tofile(output / 'windows.bin')
+    (output / 'dataset_build.json').write_text('{"preserve": "existing dataset"}\n')
+    records, original, panes = {}, {}, {}
+    statuses = ['complete', 'failed', 'cancelled', 'queued', 'running', 'cancelling']
+    for kind in ('dataset_build', 'generation'):
+        for status in statuses:
+            identifier = f'{len(records) + 1:032x}'
+            session = f'fixture-{kind}-{status}'
+            record = {'job_id': identifier, 'kind': kind, 'status': status,
+                      'tmux_session': session, 'created_at': time.time() - 60,
+                      'dataset': str(output), 'device': 'cpu',
+                      'progress': {'completed': 2 if status == 'complete' else 0, 'total': 2}}
+            directory = registry.job_dir(identifier)
+            write_json(directory / 'status.json', record)
+            (directory / 'request.json').write_text(json.dumps({'kind': kind, 'sources': [str(output)]}) + '\n')
+            (directory / 'worker.log').write_bytes((session + '\nworker output\n').encode())
+            records[identifier] = record
+            original[identifier] = {file.name: file.read_bytes() for file in directory.iterdir()}
+            panes[session] = ['0', ''] if status in ('queued', 'running', 'cancelling') else ['1', '0']
+    output_original = {file: (file.read_bytes(), file.stat().st_ino, file.stat().st_mtime_ns)
+                       for file in output.iterdir()}
+    monkeypatch.setattr(GenerationJobs, '_panes', lambda self: panes)
+
+    def unexpected_tmux(*args, **kwargs):
+        raise AssertionError('Clearing stored records must not run tmux commands')
+
+    monkeypatch.setattr('optcar.datagen.generation_jobs.subprocess.run', unexpected_tmux)
+    return registry, records, original, output_original, panes
+
+
+def assert_finished_build_clear_preserves_data(fixture):
+    registry, records, original, output_original, panes = fixture
+    deleted = {identifier for identifier, record in records.items()
+               if record['kind'] == 'dataset_build' and record['status'] in ('complete', 'failed', 'cancelled')}
+    for identifier in deleted:
+        assert not registry.job_dir(identifier).exists()
+    for identifier in records.keys() - deleted:
+        directory = registry.job_dir(identifier)
+        assert {file.name: file.read_bytes() for file in directory.iterdir()} == original[identifier]
+    for file, identity in output_original.items():
+        assert (file.read_bytes(), file.stat().st_ino, file.stat().st_mtime_ns) == identity
+    assert not (registry.directory / '.cleared').exists()
+    assert set(panes) == {record['tmux_session'] for record in records.values()}
+    return records.keys() - deleted
+
+
+def test_clear_finished_builds_deletes_only_terminal_build_records(finished_build_registry):
+    registry, _, _, _, _ = finished_build_registry
+    assert registry.clear_finished_builds() == {'cleared': 3}
+    retained = assert_finished_build_clear_preserves_data(finished_build_registry)
+    reloaded = GenerationJobs(registry.root)
+    assert {record['job_id'] for record in reloaded.list()} == retained
+    assert len(reloaded.list('dataset_build')) == 3
+    assert len(reloaded.list('generation')) == 6
+    assert reloaded.clear_finished_builds() == {'cleared': 0}
+    assert assert_finished_build_clear_preserves_data(finished_build_registry) == retained
+
+
+def test_clear_finished_builds_endpoint_and_reloaded_dashboard(finished_build_registry):
+    registry, _, _, _, _ = finished_build_registry
+    client = create_app(registry.root).test_client()
+    result = client.post('/api/dataset-builder/clear-finished', json={})
+    assert result.status_code == 200 and result.json == {'cleared': 3}
+    retained = assert_finished_build_clear_preserves_data(finished_build_registry)
+    reloaded = create_app(registry.root).test_client()
+    builds = reloaded.get('/api/dataset-builder/runs').json['runs']
+    assert {record['status'] for record in builds} == {'queued', 'running', 'cancelling'}
+    assert len(reloaded.get('/api/generation/runs').json['runs']) == 6
+    assert {record['job_id'] for record in GenerationJobs(registry.root).list()} == retained
+    assert reloaded.post('/api/dataset-builder/clear-finished', json={}).json == {'cleared': 0}
+
+
+def test_clear_finished_builds_endpoint_preserves_dataset_inside_job_directory(finished_build_registry):
+    registry, records, original, output_original, panes = finished_build_registry
+    target = next(identifier for identifier, record in records.items()
+                  if record['kind'] == 'dataset_build' and record['status'] == 'complete')
+    directory = registry.job_dir(target)
+    processed = directory / 'processed'
+    data = processed / 'sim' / 'road' / 'train'
+    data.mkdir(parents=True)
+    bin_file = data / 'windows.bin'
+    np.arange(2 * 5 * 42, dtype=np.float32).reshape(2, 5, 42).tofile(bin_file)
+    index = processed / 'dataset_build.json'
+    index.write_text('{"output_layout": "source_terrain_split_v1"}\n')
+    write_json(directory / 'status.json', {**records[target], 'dataset': str(processed)})
+    write_json(directory / 'request.json', {'kind': 'dataset_build', 'output': str(directory)})
+    (directory / 'cancel').touch()
+    (directory / 'stdout.log').write_text('Finished build\n')
+    protected = {file: (file.read_bytes(), file.stat().st_ino, file.stat().st_mtime_ns)
+                 for file in (bin_file, index)}
+
+    client = create_app(registry.root).test_client()
+    result = client.post('/api/dataset-builder/clear-finished', json={})
+    assert result.status_code == 200 and result.json == {'cleared': 3}
+    assert directory.exists()
+    assert {file.name for file in directory.iterdir()} == {'processed'}
+    for file, identity in {**output_original, **protected}.items():
+        assert (file.read_bytes(), file.stat().st_ino, file.stat().st_mtime_ns) == identity
+    removed = {identifier for identifier, record in records.items()
+               if record['kind'] == 'dataset_build' and record['status'] in ('complete', 'failed', 'cancelled')}
+    for identifier in removed - {target}:
+        assert not registry.job_dir(identifier).exists()
+    for identifier in records.keys() - removed:
+        assert {file.name: file.read_bytes() for file in registry.job_dir(identifier).iterdir()} == original[identifier]
+    assert {record['job_id'] for record in GenerationJobs(registry.root).list()} == records.keys() - removed
+    assert target not in {record['job_id'] for record in client.get('/api/dataset-builder/runs').json['runs']}
+    assert client.post('/api/dataset-builder/clear-finished', json={}).json == {'cleared': 0}
+    assert not (registry.directory / '.cleared').exists()
+    assert set(panes) == {record['tmux_session'] for record in records.values()}
+    for file, identity in protected.items():
+        assert (file.read_bytes(), file.stat().st_ino, file.stat().st_mtime_ns) == identity
+
+
+@pytest.mark.parametrize('existing_root', [False, True])
+def test_clear_finished_builds_without_registry_creates_nothing(tmp_path, monkeypatch, existing_root):
+    root = tmp_path / 'datasets'
+    if existing_root:
+        root.mkdir()
+    registry = GenerationJobs(root)
+
+    def unexpected_pane_query(self):
+        raise AssertionError('Missing registries need no pane query')
+
+    monkeypatch.setattr(GenerationJobs, '_panes', unexpected_pane_query)
+    assert registry.clear_finished_builds() == {'cleared': 0}
+    assert not registry.directory.exists()
+    assert root.exists() == existing_root
+
+
+def test_run_list_tolerates_finished_record_deleted_during_refresh(finished_build_registry, monkeypatch):
+    registry, records, _, output_original, _ = finished_build_registry
+    target = next(identifier for identifier, record in records.items()
+                  if record['kind'] == 'dataset_build' and record['status'] == 'complete')
+    original_read = registry._read
+
+    def concurrently_deleted(identifier, panes):
+        if identifier == target:
+            shutil.rmtree(registry.job_dir(identifier))
+        return original_read(identifier, panes)
+
+    monkeypatch.setattr(registry, '_read', concurrently_deleted)
+    assert {record['job_id'] for record in registry.list()} == records.keys() - {target}
+    for file, identity in output_original.items():
+        assert (file.read_bytes(), file.stat().st_ino, file.stat().st_mtime_ns) == identity

@@ -66,9 +66,42 @@ class GenerationJobs:
 
     def list(self, kind=None):
         panes = self._panes()
-        records = [self._read(path.parent.name, panes) for path in self.directory.glob("*/status.json")]
+        records = []
+        for path in self.directory.glob("*/status.json"):
+            if not re.fullmatch(r"[0-9a-f]{32}", path.parent.name):
+                continue
+            try:
+                records.append(self._read(path.parent.name, panes))
+            except FileNotFoundError:
+                # A finished record may have been cleared during this refresh.
+                continue
         return sorted((r for r in records if kind is None or r.get("kind", "generation") == kind),
                       key=lambda item: item["created_at"], reverse=True)
+
+    def clear_finished_builds(self):
+        """Delete finished build logs; retain datasets, sessions and active jobs."""
+        if not self.directory.exists():
+            return {"cleared": 0}
+        cleared = 0
+        with (self.directory / "launch.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            for record in self.list("dataset_build"):
+                if record["status"] not in {"complete", "failed", "cancelled"}:
+                    continue
+                directory = self.job_dir(record["job_id"])
+                latest = json.loads((directory / "status.json").read_text())
+                if latest["status"] not in {"complete", "failed", "cancelled"}:
+                    continue
+                # Delete job logs only. An output deliberately placed inside a
+                # job folder must remain, just like outputs elsewhere.
+                for path in directory.iterdir():
+                    if path.name in {"status.json", "request.json", "cancel"} or path.suffix == ".log":
+                        if path.is_file() or path.is_symlink():
+                            path.unlink()
+                if not any(directory.iterdir()):
+                    directory.rmdir()
+                cleared += 1
+        return {"cleared": cleared}
 
     def cancel(self, identifier):
         record = self.get(identifier)
