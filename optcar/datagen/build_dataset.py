@@ -1,5 +1,7 @@
 """Assemble selected real/synthetic raw bins using OptCar's existing FKD writer."""
-from collections import defaultdict
+from collections import defaultdict, deque
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from dataclasses import asdict
 import hashlib
 import json
@@ -8,10 +10,12 @@ from pathlib import Path
 import time
 
 import numpy as np
+import torch
 
-from optcar.dataset import DataConfig, DatasetWriter, session_split
+from optcar.dataset import DataConfig, DatasetWriter, chunk_view, pack_windows, session_split
 from optcar.datagen.raw_bins import describe_bin, list_bins, load_bin, read_metadata
 from optcar.utils.file_io import safe_name, write_json
+from optcar.utils.devices import available_devices, resolve_device
 
 
 def _manifest_episode(path, cache):
@@ -37,7 +41,7 @@ def inspect_sources(sources, data=None, seed=42, fractions=(.8, .1, .1)):
     session_split("validate", seed, fractions)
     if not sources:
         raise ValueError("Add at least one raw bin source")
-    records, errors, seen, sessions, cache, synthetic_sessions = [], [], set(), {}, {}, set()
+    records, errors, seen, sessions, cache = [], [], set(), {}, {}
     for source_index, spec in enumerate(sources):
         path = Path(spec["path"]).expanduser().resolve()
         terrain, kind = safe_name(spec["terrain"]), spec["source"]
@@ -100,10 +104,9 @@ def inspect_sources(sources, data=None, seed=42, fractions=(.8, .1, .1)):
                 if known and requested_split != "auto" and requested_split != split:
                     raise ValueError("Saved episode splits are preserved; choose Automatic for this source")
                 identity = (kind, session)
-                if kind == "sim" and identity in synthetic_sessions:
-                    raise ValueError("This synthetic episode is already selected in another source")
-                if kind == "sim":
-                    synthetic_sessions.add(identity)
+                # Saved synthetic IDs derive from settings and run index, so
+                # separate collection folders can repeat them. File paths above
+                # identify duplicate inputs; retain saved session splits below.
                 if identity in sessions and sessions[identity] != split:
                     raise ValueError("One recording/session cannot appear in different splits")
                 sessions[identity] = split
@@ -169,24 +172,69 @@ def _check_output_files(root, grouped, data):
                         raise ValueError(f"Output would replace an existing file: {path}")
 
 
-def build_dataset(output, sources, data=None, seed=42, fractions=(.8, .1, .1), progress=None, cancelled=None):
+def build_output(output, sources):
+    root = Path(output).expanduser().resolve()
+    for source in sources:
+        path = Path(source["path"]).expanduser().resolve()
+        base = path.parent if path.is_file() else path
+        if base.is_relative_to(root):
+            return root / "processed"
+    return root
+
+
+def load_files_parallel(entries, max_workers=16, cancelled=None):
+    """Adapt WheeledLab RawDatasetProcessor.load_files_parallel's thread loading.
+
+    Use the shared raw reader, materializing bytes in the loading threads.
+    Keep at most max_workers files prefetched and retain source order/IDs rather
+    than concatenating the entire corpus (sources can have different lengths).
+    Frame conversion and writing remain in the existing GPU/writer path.
+    """
+    def load_single(entry):
+        rows, _ = load_bin(Path(entry["path"]), entry["columns"], entry["num_envs"], None)
+        return np.array(rows, dtype=np.float32, copy=True)
+
+    remaining = iter(entries)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        pending = deque()
+        try:
+            for _ in range(max_workers):
+                if cancelled and cancelled():
+                    break
+                entry = next(remaining, None)
+                if entry is None:
+                    break
+                pending.append((entry, executor.submit(load_single, entry)))
+            while pending:
+                if cancelled and cancelled():
+                    break
+                entry, future = pending.popleft()
+                rows = future.result()
+                following = next(remaining, None)
+                if following is not None and not (cancelled and cancelled()):
+                    pending.append((following, executor.submit(load_single, following)))
+                yield entry, rows
+        finally:
+            for _, future in pending:
+                future.cancel()
+
+
+def build_dataset(output, sources, data=None, seed=42, fractions=(.8, .1, .1), progress=None, cancelled=None, device=None, workers=16):
     data = data or DataConfig()
+    if type(workers) is not int or workers < 1:
+        raise ValueError("File loading workers must be a positive integer")
+    device = resolve_device(device if device is not None else available_devices()["default"])
+    started = time.monotonic()
+    if progress:
+        progress({"completed": 0, "total": 0, "new_windows": 0, "current": "Inspecting selected bins", "device": device})
     plan = inspect_sources(sources, data, seed, fractions)
     if plan["errors"]:
         raise ValueError("Fix source errors before building: " + "; ".join(plan["errors"][:5]))
     if not plan["files"]:
         raise ValueError("No usable raw bins selected")
-    root = Path(output).expanduser().resolve()
+    root = build_output(output, sources)
     if root.exists() and not root.is_dir():
         raise ValueError("Dataset output must be a folder")
-    # Selecting a parent of the raw collections creates one new output folder
-    # inside it, rather than placing build artifacts among those collections.
-    for source in sources:
-        path = Path(source["path"]).expanduser().resolve()
-        base = path.parent if path.is_file() else path
-        if base.is_relative_to(root):
-            root = root / "processed"
-            break
     identity = {"config": plan["config"], "bins": plan["bins"], "seed": seed, "fractions": list(fractions)}
     index = root / "dataset_build.json"
     root.mkdir(parents=True, exist_ok=True)
@@ -203,29 +251,61 @@ def build_dataset(output, sources, data=None, seed=42, fractions=(.8, .1, .1), p
             grouped[entry["terrain"], entry["source"]].append(entry)
         _check_output_files(root, grouped, data)
         write_json(index, identity)
-        completed, windows, started, skipped = 0, 0, time.monotonic(), []
+        completed, windows, skipped, done_windows = 0, 0, [], 0
+        total_windows = sum(plan["windows"].values())
+        def report(current, within=0):
+            if progress:
+                progress({"completed": done_windows + within, "total": total_windows, "new_windows": windows,
+                          "files_completed": completed, "files_total": plan["files"], "current": current,
+                          "device": device, "workers": workers, "elapsed_s": time.monotonic() - started})
         for (terrain, kind), entries in grouped.items():
             provenance = {"inputs": entries, "calibrations": [e["calibration"] for e in entries if e["calibration"]]}
-            with DatasetWriter(root / terrain / kind, data, kind, terrain, provenance) as writer:
-                for entry in entries:
+            report(f"Loading bins · {workers} file loading workers")
+            with DatasetWriter(root / terrain / kind, data, kind, terrain, provenance) as writer, \
+                    closing(load_files_parallel(entries, workers, cancelled)) as loaded:
+                for entry, rows in loaded:
                     if cancelled and cancelled():
                         return {"dataset": str(root), "completed": completed, "total": plan["files"], "new_windows": windows, "skipped": skipped}
+                    report(f"Loading {entry['name']}")
+                    # Same whole-environment invalid-sample policy as WheeledLab.
+                    valid = np.isfinite(rows).all(axis=(1, 2))
+                    per_env = entry["estimated_windows"] // entry["num_envs"]
+                    pending = []
                     for environment in range(entry["num_envs"]):
-                        rows, _ = load_bin(Path(entry["path"]), entry["columns"], entry["num_envs"], environment)
-                        # WheeledLab processing_sim.py skips the entire environment
-                        # trajectory if any sample has NaNs; do not invent gap segments.
-                        if not np.isfinite(rows).all():
+                        if not valid[environment]:
                             skipped.append(f"{entry['name']} environment {environment}: nonfinite trajectory")
-                            continue
-                        name = _episode_name(entry, environment)
-                        if writer.contains(name):
-                            continue
-                        windows += writer.write_episode(name, rows[:, :13], rows[:, 13:15],
-                            entry["split"], session=entry["session"], vehicle_id=entry["vehicle_id"],
-                            metadata={"input": entry["path"], "environment": environment})
+                            done_windows += per_env
+                        elif writer.contains(_episode_name(entry, environment)):
+                            done_windows += per_env
+                        else:
+                            pending.append(environment)
+                    # WheeledLab moves a batch to the device, unfolds windows there,
+                    # and keeps frame conversion in Torch until the final disk write.
+                    group_size = max(1, data.shard_windows // per_env)
+                    for start in range(0, len(pending), group_size):
+                        if cancelled and cancelled():
+                            return {"dataset": str(root), "completed": completed, "total": plan["files"], "new_windows": windows, "skipped": skipped}
+                        group = pending[start:start + group_size]
+                        report(f"Converting {entry['name']} · {len(group)} trajectories · {device}")
+                        batch = torch.from_numpy(np.array(rows[group, ..., :15], copy=True)).to(device)
+                        packed = None
+                        if per_env <= data.shard_windows:
+                            chunks = chunk_view(batch, data.window_steps, data.stride).contiguous().reshape(-1, data.window_steps, 15)
+                            with torch.no_grad():
+                                packed = pack_windows(chunks[..., :13], chunks[..., 13:15], data.history_steps,
+                                                      entry["vehicle_id"]).reshape(len(group), per_env, data.window_steps, 42)
+                            del chunks
+                        for index_in_group, environment in enumerate(group):
+                            def shard_progress(count, total, phase):
+                                report(f"{phase} · {entry['name']} · trajectory {environment + 1}/{entry['num_envs']}", count)
+                            windows += writer.write_episode(_episode_name(entry, environment), rows[environment, :, :13],
+                                rows[environment, :, 13:15], entry["split"], session=entry["session"],
+                                vehicle_id=entry["vehicle_id"], metadata={"input": entry["path"], "environment": environment},
+                                device=device, raw_tensor=batch[index_in_group],
+                                packed_windows=None if packed is None else packed[index_in_group], progress=shard_progress)
+                            done_windows += per_env
+                        del batch, packed
                     writer.commit()
                     completed += 1
-                    if progress:
-                        progress({"completed": completed, "total": plan["files"], "new_windows": windows,
-                                  "current": entry["name"], "elapsed_s": time.monotonic() - started})
+                    report(f"Saved {entry['name']}")
         return {"dataset": str(root), "completed": completed, "total": plan["files"], "new_windows": windows, "skipped": skipped}

@@ -149,6 +149,11 @@
 <aside aria-label="Dataset settings">
   <section><span class="eyebrow">TRAINING DATASET</span><h2>Build training windows.</h2>
     <label>Output folder<input id="builder-output" placeholder="/path/to/datasets/built/default"></label>
+    <label>Processing device<select id="builder-device"><option value="cpu">Detecting GPUs…</option></select></label>
+    <div class="button-row"><button id="builder-refresh-devices" class="secondary">Refresh GPUs</button></div>
+    <p id="builder-device-info" class="hint"></p>
+    <label>File loading workers<input id="builder-workers" type="number" min="1" step="1" value="16"></label>
+    <p class="hint">WheeledLab's default: 16 threads load bins while the selected device converts windows.</p>
     <div class="two"><label>History samples<input id="history-steps" type="number" value="250" min="2"></label><label>Future transitions<input id="future-steps" type="number" value="50" min="1"></label></div>
     <div class="two"><label>Timestep (s)<input id="builder-dt" type="number" value="0.02" min="0.000001" step="0.005"></label><label>Window stride<input id="stride" type="number" value="10" min="1"></label></div>
     <p id="builder-window-hint" class="hint"></p>
@@ -159,7 +164,7 @@
     </details>
     <button id="builder-review" class="secondary wide">Review selected bins</button>
     <button id="builder-build" class="primary wide" disabled>Build dataset</button>
-    <p class="hint">Writes world, body and delta states with commands and vehicle ID. Source bins are preserved. Choose a separate output folder.</p>
+    <p class="hint">Writes world, body and delta states with commands and vehicle ID. Selecting the input parent creates a processed folder inside it.</p>
     <details><summary>Export loaded ROS2 recording</summary>
       <label>Export run name<input id="export-run" value="default"></label>
       <p class="hint">Uses the recording loaded in Automatic bag fitting, its terrain and timestep, and these window settings.</p>
@@ -174,7 +179,7 @@
   <section class="raw-card builder-plan"><span class="eyebrow">DATASET PREVIEW</span><div id="builder-summary">Scan sources, select bins, then review the dataset.</div><ul id="builder-errors" class="error" hidden></ul><p class="hint">Counts are estimates before checking invalid samples. As in WheeledLab, trajectories containing missing samples are skipped. Windows stay within recordings.</p></section>
   <div id="builder-sources" class="builder-sources"></div>
 
-  <section class="generation-progress"><span class="eyebrow">BUILD PROGRESS</span><div id="builder-jobs" class="jobs">No build started.</div></section>
+  <section class="generation-progress generation-dashboard"><div class="section-heading"><div><span class="eyebrow">BUILD DASHBOARD</span><h2>Dataset builds</h2></div><div class="generation-range-toolbar"><span id="builder-runs-summary" class="muted"></span><button id="builder-runs-refresh" class="secondary">Refresh builds</button></div></div><p class="hint">Each build runs in its own tmux session and continues when the GUI is closed.</p><div id="builder-jobs" class="generation-run-grid">No tmux builds yet.</div></section>
   <div id="builder-status" role="status">Ready. Add a source folder to begin.</div>
 </main>
 </div>

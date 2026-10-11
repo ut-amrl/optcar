@@ -161,3 +161,58 @@ def test_gui_explicit_config_and_output_location(tmp_path, monkeypatch, wrapped)
     error = client.post('/api/generate', json={'terrain': 'mulch', 'preset_path': missing})
     assert error.status_code == 400 and 'missing.yaml' in error.json['error']
     assert len(launches) == 1
+
+
+def test_builder_tmux_progress_reconnect_and_separate_dashboards(manager, tmp_path):
+    from optcar.dataset import DataConfig
+    from test_dataset_builder import raw_fixture, spec
+    file,_=raw_fixture(tmp_path/'inputs',environments=3)
+    config=DataConfig(history_steps=3,future_steps=2,stride=1,shard_windows=3)
+    client=create_app(manager.root).test_client()
+    response=client.post('/api/dataset-builder/build',json={'output':str(tmp_path/'output'),
+        'sources':[spec(file)],'data':asdict(config),'device':'cpu','workers':3})
+    assert response.status_code==200,response.json
+    job=response.json
+    assert job['tmux_session'].startswith('optcar-build-')
+    with pytest.raises(ValueError,match='active job'):
+        manager.start_build(tmp_path/'output',[spec(file)],config,device='cpu')
+    record=wait_finished(manager,job['job_id'])
+    assert record['status']=='complete',record
+    assert record['device']=='cpu' and record['workers']==3 and record['result']['new_windows']==24
+    snapshot=json.loads((manager.job_dir(job['job_id'])/'request.json').read_text())
+    assert snapshot['workers']==3
+    assert record['progress']['completed']==record['progress']['total']==24
+    assert record['progress']['files_completed']==record['progress']['files_total']==1
+    new_client=create_app(manager.root).test_client()
+    assert new_client.get('/api/dataset-builder/runs').json['runs'][0]['job_id']==job['job_id']
+    assert new_client.get('/api/generation/runs').json['runs']==[]
+    pane=subprocess.run(['tmux','capture-pane','-p','-t',record['tmux_session']],capture_output=True,text=True,check=True).stdout
+    assert 'Complete' in pane and '24 new windows' in pane and 'File loading workers: 3' in pane
+
+
+def test_builder_cancellation_and_gpu_validation(manager, tmp_path):
+    from test_dataset_builder import raw_fixture, spec
+    file,_=raw_fixture(tmp_path/'inputs')
+    with pytest.raises(ValueError,match='unavailable'):
+        manager.start_build(tmp_path/'invalid',[spec(file)],device='cuda:9999')
+    assert not manager.list('dataset_build') and not (tmp_path/'invalid').exists()
+    job=manager.start_build(tmp_path/'cancelled',[spec(file)],data={'history_steps':3,'future_steps':2},device='cpu')
+    manager.cancel(job['job_id'])
+    record=wait_finished(manager,job['job_id'])
+    assert record['status']=='cancelled',record
+    assert record['result']['completed']==record['result']['new_windows']==0
+    assert not list((tmp_path/'cancelled').rglob('*.bin'))
+
+
+def test_builder_cli_same_tmux_manager(tmp_path, monkeypatch, capsys):
+    from optcar.cli import main
+    config=tmp_path/'builder.yaml'
+    write_yaml(config,{'output':str(tmp_path/'output'),'sources':[{'path':str(tmp_path/'raw'),'terrain':'road','source':'sim'}]})
+    called=[]
+    def launch(self,output,sources,data,seed,fractions,**kwargs):
+        called.append((self.root,output,sources,kwargs))
+        return {'tmux_session':'optcar-build-test'}
+    monkeypatch.setattr(GenerationJobs,'start_build',launch)
+    main(['build-dataset','--config',str(config),'--device','cuda:1','--workers','6','--dataset-root',str(tmp_path/'registry')])
+    assert json.loads(capsys.readouterr().out)['tmux_session']=='optcar-build-test'
+    assert called[0][0]==tmp_path/'registry' and called[0][3]['device']=='cuda:1' and called[0][3]['workers']==6

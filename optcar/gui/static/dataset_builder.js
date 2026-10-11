@@ -15,7 +15,7 @@ function invalidateBuilder() {
   $('builder-window-hint').textContent=`${h+f} samples per window · ${(Math.max(0,h-1)*dt).toFixed(2)}s observed history · ${(f*dt).toFixed(2)}s future`;
 }
 function builderRequest(sources=builderState.sources, selected=true) {
-  return {output:$('builder-output').value.trim(),data:dataConfig(),seed:number('builder-seed'),
+  return {output:$('builder-output').value.trim(),device:$('builder-device').value,workers:number('builder-workers'),data:dataConfig(),seed:number('builder-seed'),
     fractions:['builder-train','builder-val','builder-test'].map(id=>number(id)/100),
     sources:sources.map(source=>({path:source.path.value.trim(),terrain:source.terrain.value.trim(),
       source:source.kind,split:source.split.value,...(source.vehicle.value.trim()?{vehicle_id:Number(source.vehicle.value)}:{}),
@@ -84,7 +84,8 @@ function addDatasetSource(path='', terrain='road', kind='real') {
       const result=await api('/api/dataset-builder/inspect',builderRequest([source],false));
       if(revision!==source.scanRevision)return;
       source.bins=result.bins;source.selected=new Set(result.bins.filter(e=>!e.error).map(e=>e.path));render();
-      builderStatus(`Found ${result.bins.length} bins. Choose recordings, then review the dataset.`);
+      const unavailable=result.bins.filter(e=>e.error);
+      builderStatus(unavailable.length?`Found ${result.bins.length} bins · ${unavailable.length} unavailable. ${unavailable[0].name}: ${unavailable[0].error}`:`Found ${result.bins.length} bins. Choose recordings, then review the dataset.`,Boolean(unavailable.length));
     }catch(error){builderStatus(error.message,true);}finally{scan.disabled=false;}
   };
   builderState.sources.push(source);$('builder-sources').append(card);invalidateBuilder();return source;
@@ -92,11 +93,11 @@ function addDatasetSource(path='', terrain='road', kind='real') {
 function displayBuilderPlan(plan) {
   const summary=$('builder-summary');summary.replaceChildren();
   const metrics=document.createElement('div');metrics.className='metrics builder-metrics';
-  for(const [title,value]of [['Selected bins',plan.files],['Training',plan.windows.train],['Validation',plan.windows.val],['Test',plan.windows.test]]){
+  for(const [title,value]of [['Selected bin files',plan.files],['Training windows',plan.windows.train],['Validation windows',plan.windows.val],['Test windows',plan.windows.test]]){
     const box=document.createElement('div'),label=document.createElement('span'),count=document.createElement('strong');
     label.textContent=title;count.textContent=value.toLocaleString();box.append(label,count);metrics.append(box);
   }
-  summary.append(metrics);const errors=$('builder-errors');errors.replaceChildren();
+  const explanation=document.createElement('p');explanation.className='hint';explanation.textContent=`Each window has ${plan.config.history_steps+plan.config.future_steps} samples (${plan.config.history_steps} history + ${plan.config.future_steps} future). Starts are ${plan.config.stride} samples apart. Split counts are windows, not raw timesteps.`;summary.append(metrics,explanation);const errors=$('builder-errors');errors.replaceChildren();
   for(const message of plan.errors){const item=document.createElement('li');item.textContent=message;errors.append(item);}errors.hidden=!plan.errors.length;
 }
 bind('builder-add-real',()=>addDatasetSource());
@@ -113,9 +114,35 @@ $('builder-build').onclick=async()=>{
   if(!builderState.plan||builderState.active)return;
   const request=builderState.plan.request;builderState.active=true;$('builder-build').disabled=true;
   try{
-    const result=await api('/api/dataset-builder/build',request);builderStatus('Building dataset…');
-    trackJob(result,'Dataset build',completed=>builderStatus(`Built ${completed.new_windows.toLocaleString()} new windows in ${completed.dataset}${completed.skipped.length?'. '+completed.skipped.length+' recordings/environments had no valid window.':''}`),'builder-jobs',()=>{builderState.active=false;$('builder-build').disabled=!builderState.plan||Boolean(builderState.plan.plan.errors.length)||!builderState.plan.plan.files;});
-  }catch(error){builderState.active=false;$('builder-build').disabled=false;builderStatus(error.message,true);}
+    const result=await api('/api/dataset-builder/build',request);
+    builderStatus(`Started ${result.tmux_session}. Attach with: ${result.attach_command}`);
+    await refreshBuilderRuns();
+  }catch(error){builderStatus(error.message,true);}
+  finally{builderState.active=false;$('builder-build').disabled=!builderState.plan||Boolean(builderState.plan.plan.errors.length)||!builderState.plan.plan.files;}
 };
-for(const id of ['builder-output','history-steps','future-steps','builder-dt','stride','builder-seed','builder-train','builder-val','builder-test'])$(id).addEventListener('input',invalidateBuilder);
+for(const id of ['builder-workers','builder-device','builder-output','history-steps','future-steps','builder-dt','stride','builder-seed','builder-train','builder-val','builder-test'])$(id).addEventListener('input',invalidateBuilder);
 invalidateBuilder();
+
+// Reuse the generation dashboard's cards and tmux controls for dataset builds.
+const builderRunCards=new Map();
+let builderRunsBusy=false;
+async function refreshBuilderRuns(){
+  if(builderRunsBusy)return;
+  builderRunsBusy=true;
+  try{
+    const {runs}=await api('/api/dataset-builder/runs'),container=$('builder-jobs');
+    $('builder-runs-summary').textContent=`${runs.filter(generationRunActive).length} active · ${runs.filter(j=>j.status==='complete').length} complete · ${runs.length} total`;
+    if(!runs.length){container.textContent='No tmux builds yet.';return;}
+    if(!builderRunCards.size)container.replaceChildren();
+    let position=0;
+    for(const job of runs){
+      let entry=builderRunCards.get(job.job_id);
+      if(!entry){entry=generationRunCard(job,builderStatus,refreshBuilderRuns);builderRunCards.set(job.job_id,entry);container.append(entry.card);}
+      const current=container.children[position++];if(current!==entry.card)container.insertBefore(entry.card,current||null);
+      updateGenerationRun(entry,job);
+    }
+  }finally{builderRunsBusy=false;}
+}
+bind('builder-runs-refresh',refreshBuilderRuns);
+bind('builder-refresh-devices',()=>refreshDevices());
+setInterval(()=>{if(state.tab==='builder')refreshBuilderRuns().catch(e=>builderStatus(e.message,true));},2000);

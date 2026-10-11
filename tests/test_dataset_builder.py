@@ -181,3 +181,115 @@ def test_full_rotation_and_delta_reconstruction():
     assert torch.all(torch.sum(rebuilt[0,:,3:7]*packed[0,1:,3:7],-1).abs()>.99999)
     sample=model_sample(packed[0],3)
     assert sample['commands'].shape==(2,2) and sample['target_delta'].shape==(2,7)
+
+
+@pytest.mark.parametrize('shard_windows', [2, 20])
+def test_cpu_gpu_build_parity_progress_and_resume(tmp_path, shard_windows):
+    if not torch.cuda.is_available():
+        pytest.skip('CUDA is unavailable')
+    file, rows = raw_fixture(tmp_path/'inputs', environments=4)
+    # Full rotations and sign changes exercise more than planar motion.
+    from optcar.utils.math import euler_to_quat_torch
+    rng=np.random.default_rng(6)
+    q=euler_to_quat_torch(torch.tensor(rng.normal(size=(4*12,3)),dtype=torch.float32)).reshape(4,12,4).numpy()
+    q[:,1::2]*=-1; rows[...,3:7]=q;rows.tofile(file)
+    cfg=DataConfig(history_steps=4,future_steps=3,stride=2,shard_windows=shard_windows)
+    progress=[]
+    cpu=build_dataset(tmp_path/'cpu',[spec(file)],cfg,device='cpu')
+    gpu=build_dataset(tmp_path/'gpu',[spec(file)],cfg,device='cuda:0',progress=progress.append)
+    assert cpu['new_windows']==gpu['new_windows']==12
+    assert progress[0]['current']=='Inspecting selected bins'
+    assert progress[-1]['completed']==progress[-1]['total']==12
+    assert any(0<p['completed']<12 for p in progress)
+    assert any('Converting' in p['current'] for p in progress)
+    assert any('Writing' in p['current'] for p in progress)
+    assert all(p['device']=='cuda:0' for p in progress)
+    cpu_shards=sorted((tmp_path/'cpu').rglob('processed/data/*.bin'))
+    gpu_shards=sorted((tmp_path/'gpu').rglob('processed/data/*.bin'))
+    assert len(cpu_shards)==len(gpu_shards)
+    for left,right in zip(cpu_shards,gpu_shards):
+        np.testing.assert_allclose(np.fromfile(left,np.float32),np.fromfile(right,np.float32),atol=2e-6,rtol=2e-6)
+    assert build_dataset(tmp_path/'gpu',[spec(file)],cfg,device='cpu')['new_windows']==0
+
+
+def test_invalid_build_device_before_output(tmp_path):
+    file,_=raw_fixture(tmp_path/'inputs')
+    with pytest.raises(ValueError,match='unavailable'):
+        build_dataset(tmp_path/'out',[spec(file)],device='cuda:9999')
+    assert not (tmp_path/'out').exists()
+
+
+def test_loading_workers_read_concurrently_keep_order_and_copy(monkeypatch):
+    from threading import Barrier, Lock, current_thread
+    from optcar.datagen import build_dataset as module
+    barrier=Barrier(2);lock=Lock();threads=set()
+    original=np.zeros((1,7,15),np.float32);original[...,3]=1
+    def load(path,*args):
+        with lock:threads.add(current_thread().name)
+        barrier.wait(timeout=5)
+        return original,15
+    monkeypatch.setattr(module,'load_bin',load)
+    entries=[{'path':str(index),'columns':15,'num_envs':1} for index in range(4)]
+    loaded=list(module.load_files_parallel(entries,max_workers=2))
+    assert [entry for entry,_ in loaded]==entries
+    assert len(threads)==2
+    assert all(not np.shares_memory(rows,original) for _,rows in loaded)
+    loaded[0][1][...,0]=8
+    assert not original[...,0].any()
+
+
+def test_parallel_build_matches_single_worker_and_worker_count_can_change(tmp_path):
+    for index in range(4):
+        raw_fixture(tmp_path/'inputs',environments=2,name=f'run_{index}',source=f'/bags/run_{index}')
+    cfg=DataConfig(history_steps=3,future_steps=2,stride=1,shard_windows=3)
+    sources=[spec(tmp_path/'inputs')]
+    one=build_dataset(tmp_path/'one',sources,cfg,device='cpu',workers=1)
+    parallel=build_dataset(tmp_path/'parallel',sources,cfg,device='cpu',workers=4)
+    assert one['new_windows']==parallel['new_windows']==64
+    left=sorted((tmp_path/'one').rglob('*.bin'));right=sorted((tmp_path/'parallel').rglob('*.bin'))
+    assert len(left)==len(right)
+    for a,b in zip(left,right):
+        assert a.relative_to(tmp_path/'one')==b.relative_to(tmp_path/'parallel')
+        assert a.read_bytes()==b.read_bytes()
+    assert build_dataset(tmp_path/'parallel',sources,cfg,device='cpu',workers=2)['new_windows']==0
+
+
+@pytest.mark.parametrize('workers',[0,-1,2.5,True])
+def test_invalid_workers_before_output(tmp_path,workers):
+    with pytest.raises(ValueError,match='workers must be a positive integer'):
+        build_dataset(tmp_path/'invalid',[],workers=workers)
+    assert not (tmp_path/'invalid').exists()
+
+
+def test_cancelled_loader_does_not_read(monkeypatch):
+    from optcar.datagen import build_dataset as module
+    monkeypatch.setattr(module,'load_bin',lambda *args:pytest.fail('Cancelled loader read a file'))
+    assert list(module.load_files_parallel([{'path':'unused'}],max_workers=16,cancelled=lambda:True))==[]
+
+
+def test_separate_synthetic_collections_can_repeat_saved_episode_ids(tmp_path):
+    parent=tmp_path/'grass'
+    cfg=DataConfig(history_steps=3,future_steps=2,stride=1)
+    original={}
+    # Reproduce grass_0 / grass_1, whose config-derived saved batch IDs repeat.
+    # Contents can differ: an ID alone is not a content-duplicate check.
+    for index in range(2):
+        _,rows=raw_fixture(tmp_path/f'fixture_{index}')
+        rows[...,0]+=index
+        with DatasetWriter(parent/f'grass_{index}',cfg,'sim','grass',process_windows=False) as writer:
+            writer.write_episode('batch_settings_000000000',rows[0,:,:13],rows[0,:,13:15],
+                                 'val',session='batch_settings_000000000')
+        path=parent/f'grass_{index}/raw/batch_settings_000000000.bin'
+        original[path]=path.read_bytes()
+    source=spec(parent,terrain='grass',source='sim',split='auto')
+    plan=inspect_sources([source],cfg)
+    assert plan['files']==2 and plan['windows']['val']==16 and not plan['errors']
+    result=build_dataset(tmp_path/'built',[source],cfg,device='cpu',workers=2)
+    assert result['completed']==2 and result['new_windows']==16
+    manifest=json.loads((tmp_path/'built/grass/sim/manifest.json').read_text())
+    assert len(manifest['episodes'])==2
+    assert all(e['split']=='val' for e in manifest['episodes'].values())
+    assert all(path.read_bytes()==contents for path,contents in original.items())
+    assert build_dataset(tmp_path/'built',[source],cfg,device='cpu')['new_windows']==0
+    # Selecting the same file through another source still fails.
+    assert 'already selected' in inspect_sources([source,spec(next(iter(original)),terrain='grass',source='sim',split='auto')],cfg)['errors'][0]

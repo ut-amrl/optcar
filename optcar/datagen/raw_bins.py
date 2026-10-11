@@ -144,7 +144,7 @@ def load_bin(bin_path: Path, columns=None, num_envs=None, env_index=0) -> Tuple[
     if int(environments) != float(environments) or not 1 <= int(environments) <= 100000:
         raise ValueError("Environment count must be a positive integer")
     environments = int(environments)
-    if int(env_index) != float(env_index) or not 0 <= int(env_index) < environments:
+    if env_index is not None and (int(env_index) != float(env_index) or not 0 <= int(env_index) < environments):
         raise ValueError("Environment index is outside this bin")
     raw = np.memmap(bin_path, dtype="<f4", mode="r")
     expected = columns if columns is not None else meta["columns"]
@@ -159,7 +159,7 @@ def load_bin(bin_path: Path, columns=None, num_envs=None, env_index=0) -> Tuple[
     else:
         raise ValueError("Cannot infer raw bin columns; expected 15 or 17 float32 features")
     data = raw.reshape(environments, -1, width)
-    return data[int(env_index)], width
+    return (data if env_index is None else data[int(env_index)]), width
 
 
 def load_session(bin_path: Path) -> Dict[str, np.ndarray]:

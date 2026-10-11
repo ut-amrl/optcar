@@ -66,6 +66,15 @@ def pack_windows(states, actions, history_steps, vehicle_id=0):
     return torch.cat((states, body, delta, actions, car), -1)
 
 
+def chunk_view(data, horizon, stride):
+    """WheeledLab DatasetProcessor.generate_chunks_torch, before flattening.
+
+    Keep the unfolded [environment, window, time, feature] view until a bounded
+    processing batch is selected, so long recordings don't exhaust GPU memory.
+    """
+    return data.unfold(dimension=1, size=horizon, step=stride).permute(0, 1, 3, 2)
+
+
 def model_sample(window, history_steps):
     """Use only historical states; future states are loss targets exclusively."""
     h = history_steps
@@ -155,7 +164,8 @@ class DatasetWriter:
     def contains(self, episode):
         return episode in self.manifest["episodes"]
 
-    def write_episode(self, episode, states, actions, split, session=None, vehicle_id=0, metadata=None):
+    def write_episode(self, episode, states, actions, split, session=None, vehicle_id=0, metadata=None,
+                      device="cpu", packed_windows=None, raw_tensor=None, progress=None):
         safe_name(episode)
         if split not in ("train", "val", "test"):
             raise ValueError("split must be train, val, or test")
@@ -182,15 +192,29 @@ class DatasetWriter:
         shards, count = [], 0
         cfg = self.config
         starts = range(0, len(states) - cfg.window_steps + 1, cfg.stride) if self.process_windows else range(0)
+        chunks = None
+        if starts and packed_windows is None:
+            rows = raw_tensor if raw_tensor is not None else torch.from_numpy(
+                np.concatenate((states, actions), -1)).to(device)
+            chunks = chunk_view(rows[None, ..., :15], cfg.window_steps, cfg.stride)[0]
         for offset in range(0, len(starts), cfg.shard_windows):
-            selected = starts[offset:offset + cfg.shard_windows]
-            s = np.stack([states[i:i + cfg.window_steps] for i in selected])
-            a = np.stack([actions[i:i + cfg.window_steps] for i in selected])
-            packed = pack_windows(s, a, cfg.history_steps, vehicle_id).numpy()
+            if progress:
+                progress(offset, len(starts), "Converting frames")
+            if packed_windows is None:
+                selected = chunks[offset:offset + cfg.shard_windows].contiguous()
+                with torch.no_grad():
+                    packed = pack_windows(selected[..., :13], selected[..., 13:15], cfg.history_steps, vehicle_id)
+            else:
+                packed = packed_windows[offset:offset + cfg.shard_windows]
+            packed = packed.detach().cpu().numpy()
+            if progress:
+                progress(offset, len(starts), "Writing windows")
             filename = f"processed/data/{episode}_{offset:08d}.bin"
             self._binary(filename, packed)
             shards.append({"path": filename, "shape": list(packed.shape)})
             count += len(packed)
+            if progress:
+                progress(count, len(starts), "Saved windows")
         self.manifest["episodes"][episode] = {"split": split, "session": session,
             "raw": raw_file, "raw_shape": [len(states), 15], "shards": shards,
             "windows": count, "metadata": metadata or {}}

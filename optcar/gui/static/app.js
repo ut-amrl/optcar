@@ -9,7 +9,7 @@ function bind(id, action){$(id).addEventListener('click',async()=>{const button=
 async function refreshDevices(initial=false){
   try{
     const result=await api('/api/devices');
-    for(const id of ['device','predict-device']){
+    for(const id of ['device','predict-device','builder-device']){
       const select=$(id),previous=select.value;select.replaceChildren();
       for(const device of result.devices){
         const option=document.createElement('option');option.value=device.id;
@@ -19,19 +19,20 @@ async function refreshDevices(initial=false){
       select.value=initial?result.default:result.devices.some(d=>d.id===previous)?previous:result.default;
     }
     const count=result.devices.length-1;
-    const showDevice=()=>{
-      const selected=result.devices.find(d=>d.id===$('device').value);
-      $('device-info').textContent=count?`${count} GPU${count===1?'':'s'} detected. ${selected.id==='cpu'?'CPU selected.':selected.name+' · '+selected.memory_gib+' GiB.'} Each run uses the selected device.`:result.cuda_version?'No GPUs available. CPU is available.':'CPU-only Torch detected. Run setup and restart the GUI to enable GPUs.';
-    };
-    $('device').onchange=showDevice;showDevice();
-    $('device-info').classList.toggle('error',!count);
+    for(const [id,info] of [['device','device-info'],['builder-device','builder-device-info']]){
+      const showDevice=()=>{
+        const selected=result.devices.find(d=>d.id===$(id).value);
+        $(info).textContent=count?`${count} GPU${count===1?'':'s'} detected. ${selected.id==='cpu'?'CPU selected.':selected.name+' · '+selected.memory_gib+' GiB.'} Each job uses the selected device.`:result.cuda_version?'No GPUs available. CPU is available.':'CPU-only Torch detected. Run setup and restart the GUI to enable GPUs.';
+      };
+      $(id).onchange=showDevice;showDevice();$(info).classList.toggle('error',!count);
+    }
   }catch(error){$('device-info').textContent=`GPU detection failed: ${error.message}`;$('device-info').classList.add('error');throw error;}
 }
 function payload(){if(!state.session)throw new Error('Load a recording first.');return {session_id:state.session.session_id,segment:Number($('segment').value||0)};}
 function dataConfig(dtId='builder-dt'){return {history_steps:number('history-steps'),future_steps:number('future-steps'),dt:number(dtId),stride:number('stride'),shard_windows:1024};}
 function params(){return Object.fromEntries(Object.keys(state.params).map(key=>[key,number(`param-${key}`)]));}
 function setParams(values){state.params=values;$('params').replaceChildren();for(const [key,value]of Object.entries(values)){const label=document.createElement('label');label.textContent=names[key]||key;const input=document.createElement('input');input.type='number';input.id=`param-${key}`;input.value=value;input.step=key==='inertia'?'0.001':key.includes('len')||key.includes('time')?'0.01':'0.1';label.append(input);$('params').append(label);}}
-function selectTab(tab){state.tab=tab;$('builder-workspace').hidden=tab!=='builder';$('tab-builder').classList.toggle('active',tab==='builder');$('raw-workspace').hidden=tab!=='raw';$('dynamics-workspace').hidden=tab!=='model';$('generation-workspace').hidden=tab!=='generate';$('dbm-workspace').hidden=tab!=='dbm';if(tab==='dbm'&&!$('dbm-tool').getAttribute('src'))$('dbm-tool').src='/dbm/?path='+encodeURIComponent(typeof binState!=='undefined'&&binState.data?binState.data.path:$('bin-root').value)+'&folder='+encodeURIComponent($('bin-root').value);const binViewer=['bins','syn-bins'].includes(tab);$('bins-workspace').hidden=!binViewer;$('tab-syn-bins').classList.toggle('active',tab==='syn-bins');if(binViewer&&typeof switchBinViewer==='function')switchBinViewer(tab).catch(e=>status(e.message,true));$('tab-bins').classList.toggle('active',tab==='bins');state.playing=false;$('play').textContent='▶';if(typeof stopBinPlayback==='function')stopBinPlayback();if(binViewer&&typeof drawBins==='function')requestAnimationFrame(drawBins);$('tab-raw').classList.toggle('active',tab==='raw');state.prediction=null;$('dbm-controls').hidden=tab!=='dbm';$('dbm-return').hidden=tab!=='dbm';$('model-controls').hidden=tab!=='model';$('tab-dbm').classList.toggle('active',tab==='dbm');$('tab-model').classList.toggle('active',tab==='model');$('tab-generate').classList.toggle('active',tab==='generate');if(tab==='generate'){updateGenerationSummary();if(typeof refreshGenerationRuns==='function')refreshGenerationRuns().catch(e=>generationStatus(e.message,true));}$('view-title').textContent=tab==='dbm'?'Understand the dynamics.':'See what the model learns.';clearMetrics();drawAll();}
+function selectTab(tab){state.tab=tab;$('builder-workspace').hidden=tab!=='builder';$('tab-builder').classList.toggle('active',tab==='builder');$('raw-workspace').hidden=tab!=='raw';$('dynamics-workspace').hidden=tab!=='model';$('generation-workspace').hidden=tab!=='generate';$('dbm-workspace').hidden=tab!=='dbm';if(tab==='dbm'&&!$('dbm-tool').getAttribute('src'))$('dbm-tool').src='/dbm/?path='+encodeURIComponent(typeof binState!=='undefined'&&binState.data?binState.data.path:$('bin-root').value)+'&folder='+encodeURIComponent($('bin-root').value);const binViewer=['bins','syn-bins'].includes(tab);$('bins-workspace').hidden=!binViewer;$('tab-syn-bins').classList.toggle('active',tab==='syn-bins');if(binViewer&&typeof switchBinViewer==='function')switchBinViewer(tab).catch(e=>status(e.message,true));$('tab-bins').classList.toggle('active',tab==='bins');state.playing=false;$('play').textContent='▶';if(typeof stopBinPlayback==='function')stopBinPlayback();if(binViewer&&typeof drawBins==='function')requestAnimationFrame(drawBins);$('tab-raw').classList.toggle('active',tab==='raw');state.prediction=null;$('dbm-controls').hidden=tab!=='dbm';$('dbm-return').hidden=tab!=='dbm';$('model-controls').hidden=tab!=='model';$('tab-dbm').classList.toggle('active',tab==='dbm');$('tab-model').classList.toggle('active',tab==='model');$('tab-generate').classList.toggle('active',tab==='generate');if(tab==='builder'&&typeof refreshBuilderRuns==='function')refreshBuilderRuns().catch(e=>builderStatus(e.message,true));if(tab==='generate'){updateGenerationSummary();if(typeof refreshGenerationRuns==='function')refreshGenerationRuns().catch(e=>generationStatus(e.message,true));}$('view-title').textContent=tab==='dbm'?'Understand the dynamics.':'See what the model learns.';clearMetrics();drawAll();}
 function clearMetrics(){for(const id of ['metric-position','metric-heading','metric-final'])$(id).textContent='—';}
 function showPrediction(result){state.prediction=result;$('metric-position').textContent=result.metrics.position_rmse_m.toFixed(3);$('metric-heading').textContent=(result.metrics.heading_mae_rad*180/Math.PI).toFixed(2);$('metric-final').textContent=result.metrics.final_position_error_m.toFixed(3);drawAll();status(`Predicted ${result.horizon} steps from sample ${result.current}.`);}
 async function preview(){const request={...payload(),current:number('current'),horizon:number('horizon')};status('Computing trajectory…');if(state.tab==='dbm'){request.params=params();if($('wheel-speed').value!=='')request.wheel_speed=number('wheel-speed');showPrediction(await api('/api/rollout',request));}else{request.checkpoint=$('checkpoint').value;request.device=$('predict-device').value;showPrediction(await api('/api/predict',request));}}
@@ -50,7 +51,7 @@ async function trackJob(result,title,onComplete,target='jobs',onFinished){
     try{
       const job=await api(`/api/jobs/${result.job_id}`),p=job.progress;
       if(p.total){bar.value=p.completed/p.total;detail.textContent=`${job.status} · ${p.completed.toLocaleString()} / ${p.total.toLocaleString()}${p.new_windows===undefined?'':' · '+p.new_windows.toLocaleString()+' new windows'}${p.current?'\n'+p.current:''}`;}
-      else{bar.removeAttribute('value');detail.textContent=`${job.status} · ${p.evaluations||0} evaluations`;}
+      else{bar.removeAttribute('value');detail.textContent=`${job.status} · ${p.evaluations===undefined?(p.current||'Starting…'):p.evaluations+' evaluations'}`;}
       if(['queued','running'].includes(job.status)){setTimeout(poll,1000);return;}
       cancel.remove();bar.value=job.status==='complete'?1:bar.value;
       if(job.status==='failed'){detail.textContent=job.error;report(job.error,true);}

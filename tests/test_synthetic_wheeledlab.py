@@ -144,7 +144,7 @@ def test_full_collection_matches_source_steps_and_collector(tmp_path, reference,
     plan=inspect_sources([spec],cfg)
     assert plan['files']==2 and not plan['errors']
     assert sum(plan['windows'].values())==24
-    built=build_dataset(tmp_path/'built',[spec],cfg)
+    built=build_dataset(tmp_path/'built',[spec],cfg,device='cpu')
     assert built['new_windows']==24
     built_manifest=json.loads((tmp_path/'built/road/sim/manifest.json').read_text())
     first=next(iter(built_manifest['episodes'].values()))

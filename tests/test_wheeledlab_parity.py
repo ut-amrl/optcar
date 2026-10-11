@@ -80,3 +80,28 @@ def test_dbm_rk4_and_world_states_match(reference,dt):
     actual,actual_wheel=_rollout_torch(pos,q,body,x[:,6],commands,dt,**model.tensors)
     torch.testing.assert_close(actual,expected,atol=1e-6,rtol=1e-6)
     torch.testing.assert_close(actual_wheel,wheel,atol=1e-6,rtol=1e-6)
+
+
+@pytest.mark.parametrize('device', ['cpu', 'cuda:0'])
+def test_batched_chunk_view_and_gpu_frames_match_wheeledlab(reference, device):
+    from optcar.dataset import chunk_view
+    if device.startswith('cuda') and not torch.cuda.is_available():
+        pytest.skip('CUDA is unavailable')
+    rng=np.random.default_rng(71)
+    raw=torch.tensor(rng.normal(size=(4,29,15)),dtype=torch.float32,device=device)
+    raw[...,3:7]=euler_to_quat_torch(torch.tensor(rng.normal(size=(4*29,3)),dtype=torch.float32,device=device)).reshape(4,29,4)
+    raw[:,1::2,3:7]*=-1
+    untouched=raw.clone()
+    processor=SimpleNamespace(history_horizon=6,total_horizon=11,stride=3)
+    expected_chunks=reference['generate_chunks_torch'](processor,raw)
+    actual_chunks=chunk_view(raw,11,3).contiguous().reshape(-1,11,15)
+    torch.testing.assert_close(actual_chunks,expected_chunks,atol=0,rtol=0)
+    expected=reference['_process_chunks_to_frames_torch'](processor,expected_chunks)
+    # Processing bounded batches must produce the same windows and signs as
+    # WheeledLab's whole-file processing, without modifying overlapping input.
+    actual=torch.cat([pack_windows(chunk[...,:13],chunk[...,13:15],6,7)
+                      for chunk in actual_chunks.split(5)])
+    torch.testing.assert_close(actual[...,:41],expected,atol=1e-6 if device.startswith('cuda') else 0,rtol=1e-6 if device.startswith('cuda') else 0)
+    torch.testing.assert_close(actual[...,39:41],expected[...,39:41],atol=0,rtol=0)
+    assert torch.all(actual[...,41]==7)
+    torch.testing.assert_close(raw,untouched,atol=0,rtol=0)

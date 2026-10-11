@@ -66,6 +66,9 @@ def main(argv=None):
 
     build = commands.add_parser("build-dataset", help="Build FKD windows from selected real and synthetic raw bins")
     build.add_argument("--config", required=True, help="YAML with sources, data, output, seed and fractions")
+    build.add_argument("--device", help="cpu or cuda:N; defaults to the first visible GPU")
+    build.add_argument("--workers", type=int, help="Parallel file loading threads (WheeledLab default: 16)")
+    build.add_argument("--dataset-root", default="datasets", help="Folder holding the shared tmux job registry")
 
     convert = commands.add_parser("convert", help="Convert a complete bag to FKD bins")
     convert.add_argument("bag")
@@ -156,16 +159,11 @@ def _dispatch(args):
         _print(result)
     elif args.command == "build-dataset":
         from optcar.dataset import DataConfig
-        from optcar.datagen.build_dataset import build_dataset
-        from rich.progress import Progress
+        from optcar.datagen.generation_jobs import GenerationJobs
         cfg = read_config(args.config)
-        with Progress() as progress:
-            task = progress.add_task("Building dataset", total=None)
-            def update(value):
-                progress.update(task, total=value["total"], completed=value["completed"],
-                                description=f"{value['current']} · {value['new_windows']:,} new windows")
-            result = build_dataset(cfg["output"], cfg["sources"], DataConfig(**cfg.get("data", {})),
-                                   cfg.get("seed", 42), cfg.get("fractions", [.8, .1, .1]), update)
+        result = GenerationJobs(args.dataset_root).start_build(cfg["output"], cfg["sources"],
+            DataConfig(**cfg.get("data", {})), cfg.get("seed", 42), cfg.get("fractions", [.8, .1, .1]),
+            device=args.device or cfg.get("device"), workers=args.workers if args.workers is not None else cfg.get("workers", 16))
         _print(result)
     elif args.command == "convert":
         from optcar.dataset import DataConfig

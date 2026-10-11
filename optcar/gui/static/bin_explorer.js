@@ -40,7 +40,7 @@ window.OptCarBinExplorer = {
         button.setAttribute('aria-pressed', String(selected instanceof Set ? selected.has(entry.path) : selected === entry.path));
         const name = document.createElement('span'); name.textContent = entry.name;
         const meta = document.createElement('small');
-        meta.textContent = entry.error ? 'Cannot read bin' : `${formatDuration(entry.duration_s)} · ${entry.samples.toLocaleString()} samples${entry.split ? ' · '+entry.split : ''}${entry.num_envs>1?' · '+entry.num_envs+' trajectories':''}`;
+        meta.textContent = entry.error || `${formatDuration(entry.duration_s)} · ${entry.samples.toLocaleString()} samples${entry.split ? ' · '+entry.split : ''}${entry.num_envs>1?' · '+entry.num_envs+' trajectories':''}`;
         button.append(name, meta); button.onclick = () => onSelect(entry.path); parent.append(button);
       }
     }

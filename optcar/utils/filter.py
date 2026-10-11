@@ -64,7 +64,6 @@ def quaternion_continuity_filter_batch(
         return quaternions
 
     # Process each consecutive pair
-    total_flips = 0
     for i in range(1, N):
         q_prev = q[..., i-1, :]
         q_curr = q[..., i, :]
@@ -73,22 +72,13 @@ def quaternion_continuity_filter_batch(
         if is_torch:
             dot_product = torch.sum(q_prev * q_curr, dim=-1, keepdim=True)
             flip_mask = (dot_product < 0)
-            num_flips = flip_mask.sum().item()
-            total_flips += num_flips
-            # if num_flips > 0:
-                # print(f"[QuatFilter] Timestep {i}/{N}: Flipping {num_flips} quaternions (dot_product < 0)")
+            # The copied implementation counted flips only for disabled logging.
+            # Avoid synchronizing the GPU with .item() at every timestep.
             q[..., i, :] = torch.where(flip_mask, -q_curr, q_curr)
         else:
             dot_product = np.sum(q_prev * q_curr, axis=-1, keepdims=True)
             flip_mask = (dot_product < 0)
-            num_flips = np.sum(flip_mask)
-            total_flips += num_flips
-            # if num_flips > 0:
-                # print(f"[QuatFilter] Timestep {i}/{N}: Flipping {num_flips} quaternions (dot_product < 0)")
             q[..., i, :] = np.where(flip_mask, -q_curr, q_curr)
-
-    # if total_flips > 0:
-        # print(f"[QuatFilter] Total quaternion flips applied: {total_flips} across {N} timesteps")
 
     # Permute back to original dimension order
     inv_perm = [0] * ndim

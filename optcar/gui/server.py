@@ -300,7 +300,12 @@ def create_app(dataset_root="datasets", bag_root=None):
     @app.get("/api/generation/runs")
     @api
     def generation_runs():
-        return {"runs": generation_jobs.list()}
+        return {"runs": generation_jobs.list("generation")}
+
+    @app.get("/api/dataset-builder/runs")
+    @api
+    def build_runs():
+        return {"runs": generation_jobs.list("dataset_build")}
 
     @app.post("/api/dataset-builder/inspect")
     @api
@@ -314,8 +319,9 @@ def create_app(dataset_root="datasets", bag_root=None):
     def assemble_dataset():
         payload = request.get_json()
         data = DataConfig(**payload.get("data", {}))
-        return start_job(lambda progress, cancelled: build_dataset(payload["output"], payload["sources"],
-            data, payload.get("seed", 42), payload.get("fractions", [.8, .1, .1]), progress, cancelled))
+        return generation_jobs.start_build(payload["output"], payload["sources"], data,
+            payload.get("seed", 42), payload.get("fractions", [.8, .1, .1]), device=payload.get("device"),
+            workers=payload.get("workers", 16))
 
     @app.get("/api/jobs/<identifier>")
     @api

@@ -1,4 +1,4 @@
-"""Durable tmux jobs around the existing synthetic collector."""
+"""Durable tmux jobs around the synthetic collector and dataset builder."""
 from dataclasses import asdict
 from pathlib import Path
 import fcntl
@@ -53,8 +53,8 @@ class GenerationJobs:
             record = json.loads((directory / "status.json").read_text())
             if record["status"] in ACTIVE:
                 record.update(status="failed", finished_at=time.time(),
-                              error="Generation worker stopped before reporting completion. Inspect the tmux session." if pane else
-                                    "The tmux session was closed before generation finished. Completed bins are retained.")
+                              error="Worker stopped before reporting completion. Inspect the tmux session." if pane else
+                                    "The tmux session was closed before the job finished. Completed bins are retained.")
                 write_json(directory / "status.json", record)
             record["session_available"] = pane is not None
         if (directory / "cancel").exists() and record["status"] in ACTIVE:
@@ -64,10 +64,11 @@ class GenerationJobs:
     def get(self, identifier):
         return self._read(identifier, self._panes())
 
-    def list(self):
+    def list(self, kind=None):
         panes = self._panes()
         records = [self._read(path.parent.name, panes) for path in self.directory.glob("*/status.json")]
-        return sorted(records, key=lambda item: item["created_at"], reverse=True)
+        return sorted((r for r in records if kind is None or r.get("kind", "generation") == kind),
+                      key=lambda item: item["created_at"], reverse=True)
 
     def cancel(self, identifier):
         record = self.get(identifier)
@@ -118,20 +119,60 @@ class GenerationJobs:
                        "preset_path": preset.get("path"),
                        "data": asdict(data), "commands": asdict(commands), "fractions": list(fractions)})
             write_json(directory / "status.json", record)
-            # Use the GUI/CLI's exact interpreter and GPU visibility, rather than the tmux server's old environment.
-            env_args = ["env", "-u", "CUDA_VISIBLE_DEVICES", "-u", "NVIDIA_VISIBLE_DEVICES"]
-            env_args += [f"{key}={os.environ[key]}" for key in ("CUDA_VISIBLE_DEVICES", "NVIDIA_VISIBLE_DEVICES") if key in os.environ]
-            worker = env_args + [sys.executable, "-u", str(PROJECT / "scripts/generation_worker.py"), str(directory)]
-            shell_command = shlex.join([tmux, "set-option", "-w", "remain-on-exit", "on"]) + " && exec " + shlex.join(worker)
-            try:
-                subprocess.run([tmux, "new-session", "-d", "-s", session, "-c", str(PROJECT), shell_command],
-                               check=True, capture_output=True, text=True, timeout=10)
-            except (subprocess.SubprocessError, OSError) as exc:
-                error = getattr(exc, "stderr", None) or str(exc)
-                record.update(status="failed", error=f"Could not start tmux: {error.strip()}", finished_at=time.time())
-                write_json(directory / "status.json", record)
-                raise ValueError(record["error"]) from exc
+            self._launch(directory, record, tmux)
         return {"job_id": identifier, "tmux_session": session, "attach_command": record["attach_command"], "dataset": str(output)}
+
+
+    def _launch(self, directory, record, tmux):
+        # Use the GUI/CLI's exact interpreter and GPU visibility, rather than the tmux server's old environment.
+        env_args = ["env", "-u", "CUDA_VISIBLE_DEVICES", "-u", "NVIDIA_VISIBLE_DEVICES"]
+        env_args += [f"{key}={os.environ[key]}" for key in ("CUDA_VISIBLE_DEVICES", "NVIDIA_VISIBLE_DEVICES") if key in os.environ]
+        worker = env_args + [sys.executable, "-u", str(PROJECT / "scripts/generation_worker.py"), str(directory)]
+        shell_command = shlex.join([tmux, "set-option", "-w", "remain-on-exit", "on"]) + " && exec " + shlex.join(worker)
+        try:
+            subprocess.run([tmux, "new-session", "-d", "-s", record["tmux_session"], "-c", str(PROJECT), shell_command],
+                           check=True, capture_output=True, text=True, timeout=10)
+        except (subprocess.SubprocessError, OSError) as exc:
+            error = getattr(exc, "stderr", None) or str(exc)
+            record.update(status="failed", error=f"Could not start tmux: {error.strip()}", finished_at=time.time())
+            write_json(directory / "status.json", record)
+            raise ValueError(record["error"]) from exc
+
+    def start_build(self, output, sources, data=None, seed=42, fractions=(.8, .1, .1), device=None, workers=16):
+        from optcar.dataset import DataConfig, session_split
+        from optcar.datagen.build_dataset import build_output
+        from optcar.utils.devices import available_devices, resolve_device
+        tmux = shutil.which("tmux")
+        if not tmux:
+            raise ValueError("tmux is required for dataset building. Install tmux, then restart the GUI.")
+        data = data if isinstance(data, DataConfig) else DataConfig(**(data or {}))
+        if type(workers) is not int or workers < 1:
+            raise ValueError("File loading workers must be a positive integer")
+        device = resolve_device(device if device is not None else available_devices()["default"])
+        if not sources or not str(output).strip():
+            raise ValueError("Choose an output folder and at least one raw bin source")
+        if not isinstance(seed, int) or seed < 0:
+            raise ValueError("Split seed must be a nonnegative integer")
+        session_split("validate", seed, fractions)
+        target = build_output(output, sources)
+        self.directory.mkdir(parents=True, exist_ok=True)
+        with (self.directory / "launch.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if any(record["status"] in ACTIVE and record["dataset"] == str(target) for record in self.list()):
+                raise ValueError("This output already has an active job. Choose a different output folder.")
+            identifier = uuid.uuid4().hex
+            directory = self.job_dir(identifier)
+            directory.mkdir()
+            session = f"optcar-build-{identifier[:8]}"
+            record = {"job_id": identifier, "kind": "dataset_build", "status": "queued", "device": device, "workers": workers,
+                      "dataset": str(target), "tmux_session": session, "created_at": time.time(),
+                      "attach_command": shlex.join(["tmux", "attach", "-t", session]),
+                      "progress": {"completed": 0, "total": 0, "new_windows": 0, "current": "Starting worker"}}
+            write_json(directory / "request.json", {"output": str(Path(output).expanduser().resolve()),
+                       "sources": sources, "data": asdict(data), "seed": seed, "fractions": list(fractions), "workers": workers})
+            write_json(directory / "status.json", record)
+            self._launch(directory, record, tmux)
+        return {"job_id": identifier, "tmux_session": session, "attach_command": record["attach_command"], "dataset": str(target)}
 
 
 def run_worker(directory):
@@ -154,13 +195,16 @@ def run_worker(directory):
         return stopped or (directory / "cancel").exists()
     record.update(status="running", started_at=time.time(), pid=os.getpid())
     write_json(directory / "status.json", record)
-    console.print(f"OptCar · {record['terrain']} / {record['run']} · {record['device']}", markup=False)
+    label = 'Dataset build' if record['kind'] == 'dataset_build' else f"{record['terrain']} / {record['run']}"
+    console.print(f"OptCar · {label} · {record['device']}", markup=False)
+    if record["kind"] == "dataset_build":
+        console.print(f"File loading workers: {config.get('workers', 16)}", markup=False)
     console.print(f"Session: {record['tmux_session']}\nOutput: {record['dataset']}\nCtrl+C cancels; Ctrl+B then D detaches.", markup=False)
     last_saved = 0.0
     try:
         with Progress(TextColumn("{task.description}"), BarColumn(), TextColumn("{task.percentage:>3.0f}%"),
                       TimeElapsedColumn(), TimeRemainingColumn(), console=console, refresh_per_second=4) as live:
-            task = live.add_task("Starting…", total=record["progress"]["total"])
+            task = live.add_task("Starting…", total=record["progress"]["total"] or None)
             def update(value):
                 nonlocal last_saved
                 record["progress"] = value
@@ -168,19 +212,26 @@ def run_worker(directory):
                 if now - last_saved >= .5 or value["completed"] == value["total"]:
                     record["updated_at"] = time.time()
                     write_json(directory / "status.json", record)
-                    live.update(task, completed=value["completed"], total=value["total"], description=value["current"])
+                    live.update(task, completed=value["completed"], total=value["total"] or None, description=value["current"])
                     last_saved = now
-            result = generate(record["dataset"], record["terrain"], config["params"],
-                              DataConfig(**config["data"]), CommandConfig(**config["commands"]),
-                              runs=record["runs"], batch_size=record["batch_size"], device=record["device"],
-                              fractions=config["fractions"], progress=update, cancelled=cancelled,
-                              calibration=config.get("calibration"), process_windows=False)
+            if record["kind"] == "dataset_build":
+                from optcar.datagen.build_dataset import build_dataset
+                result = build_dataset(config["output"], config["sources"], DataConfig(**config["data"]),
+                                       config["seed"], config["fractions"], update, cancelled, device=record["device"],
+                                       workers=config.get("workers", 16))
+            else:
+                result = generate(record["dataset"], record["terrain"], config["params"],
+                                  DataConfig(**config["data"]), CommandConfig(**config["commands"]),
+                                  runs=record["runs"], batch_size=record["batch_size"], device=record["device"],
+                                  fractions=config["fractions"], progress=update, cancelled=cancelled,
+                                  calibration=config.get("calibration"), process_windows=False)
             complete = result["completed"] == result["total"]
             record.update(status="complete" if complete else "cancelled", result=result)
             if complete:
                 record["progress"]["completed"] = record["progress"]["total"]
                 live.update(task, completed=record["progress"]["total"], description="Complete")
-        console.print(f"{record['status'].capitalize()} · {result['completed']} bins · {result['trajectories']} trajectories", markup=False)
+        count = f"{result['new_windows']:,} new windows" if record["kind"] == "dataset_build" else f"{result['trajectories']} trajectories"
+        console.print(f"{record['status'].capitalize()} · {result['completed']} bins · {count}", markup=False)
     except Exception as exc:
         record.update(status="failed", error=str(exc))
         console.print(traceback.format_exc(), markup=False)
