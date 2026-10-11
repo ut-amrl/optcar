@@ -121,11 +121,21 @@ def test_reference_trajectories(manual_recording, name, params):
 
 
 def test_preset_round_trip_and_local_assets(manual_recording):
-    client, *_ = manual_recording
+    client, _, file, *_ = manual_recording
     params = {**asdict(DBMParams()), 'C_tire_f': 32.}
-    assert client.post('/api/preset', json={'terrain': 'mulch', 'params': params}).status_code == 200
-    assert client.get('/api/preset?terrain=mulch').get_json()['params'] == params
+    location = {'folder': str(file.parent / 'my configs'), 'filename': 'mulch.yml'}
+    response = client.post('/api/preset', json={**location, 'params': params})
+    assert response.status_code == 200
+    assert response.json['path'] == str(file.parent / 'my configs' / 'mulch.yml')
+    assert client.get('/api/preset', query_string=location).get_json()['params'] == params
+    # Missing choices cannot write to an implicit terrain/default location.
+    for patch in [{}, {'folder': location['folder']}, {'filename': 'mulch.yml'},
+                  {**location, 'filename': '../mulch.yml'}, {**location, 'folder': 'relative'}]:
+        assert client.post('/api/preset', json={**patch, 'params': params}).status_code == 400
+    assert client.get('/api/preset', query_string={'folder': location['folder']}).status_code == 400
     html = client.get('/dbm/?path=/my/bin.bin').data.decode()
+    assert 'id="preset_folder"' in html and 'id="preset_filename"' in html
+    assert 'id="preset_terrain"' not in html
     assert 'value="/my/bin.bin"' in html
     assert 'cdn.plot.ly' not in html
     assert client.get('/dbm/static/plotly-2.35.2.min.js').status_code == 200

@@ -97,7 +97,8 @@ class GenerationJobs:
         preset = preset or read_config(terrain_path(self.root, terrain) / "dbm_params.yaml")
         params = preset.get("params", preset)
         randomized_params(simulation_params(params, commands, data.dt), commands, 0)
-        output = terrain_path(self.root, terrain) / "sim" / run
+        output = (Path(preset["path"]).expanduser().resolve().parent / run if preset.get("path") else
+                  terrain_path(self.root, terrain) / "sim" / run)
         self.directory.mkdir(parents=True, exist_ok=True)
         with (self.directory / "launch.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
@@ -109,10 +110,12 @@ class GenerationJobs:
             session = f"optcar-gen-{terrain[:20]}-{run[:24]}-{identifier[:8]}".replace(".", "-")
             record = {"job_id": identifier, "kind": "generation", "status": "queued", "terrain": terrain,
                       "run": run, "device": device, "dataset": str(output), "tmux_session": session,
+                      "preset_path": preset.get("path"),
                       "attach_command": shlex.join(["tmux", "attach", "-t", session]), "created_at": time.time(),
                       "runs": runs, "batch_size": batch_size, "duration": commands.duration, "dt": data.dt,
                       "progress": {"completed": 0, "total": runs * steps}}
             write_json(directory / "request.json", {"params": params, "calibration": preset.get("calibration"),
+                       "preset_path": preset.get("path"),
                        "data": asdict(data), "commands": asdict(commands), "fractions": list(fractions)})
             write_json(directory / "status.json", record)
             # Use the GUI/CLI's exact interpreter and GPU visibility, rather than the tmux server's old environment.

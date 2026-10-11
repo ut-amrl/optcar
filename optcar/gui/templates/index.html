@@ -111,7 +111,7 @@
   <div class="generation-settings-grid">
     <section class="generation-settings-card">
       <h2>Collection</h2>
-      <div class="two"><label>Terrain preset<input id="generation-terrain" value="road"></label><label>Run name<input id="run-name" value="default"></label></div>
+      <div class="two"><label>Terrain<input id="generation-terrain" value="road"></label><label>Run name<input id="run-name" value="default"></label></div>
       <div class="generation-three"><label>Runs / bins<input id="episodes" type="number" value="10" min="1"></label><label>Batch size<input id="batch-size" type="number" value="32" min="1"></label><label>Base seed<input id="seed" type="number" value="42" min="0"></label></div>
       <div class="two"><label>Duration (s)<input id="duration" type="number" value="10" min="0.02" step="1"></label><label>Timestep (s)<input id="generation-dt" type="number" value="0.02" min="0.000001" step="0.005"></label></div>
     </section>
@@ -125,10 +125,11 @@
       <p class="hint">Uncheck to keep sampled control points. Noise can still reach a bound.</p>
     </section>
     <section class="generation-settings-card generation-preset">
-      <div class="section-heading"><h2>Device &amp; saved preset</h2><button id="refresh-devices" class="secondary">Refresh GPUs</button></div>
+      <div class="section-heading"><h2>Device &amp; DBM config</h2><button id="refresh-devices" class="secondary">Refresh GPUs</button></div>
       <label>Collection device<select id="device"><option value="cpu">CPU</option></select></label>
       <p id="device-info" class="hint" role="status">Detecting GPUs…</p>
-      <div class="generation-preset-check"><span id="generation-preset-status" class="hint" role="status">Uses the terrain preset saved in DBM calibration.</span><button id="generation-load-preset" class="secondary">Check preset</button></div>
+      <label>DBM config path<input id="generation-preset-path" placeholder="/full/path/to/mulch.yaml" spellcheck="false"></label>
+      <div class="generation-preset-check"><span id="generation-preset-status" class="hint" role="status">Enter a YAML path, or leave blank to use the saved terrain preset.</span><button id="generation-load-preset" class="secondary">Load config</button></div>
       <details id="generation-preset-details" hidden><summary>Saved parameters</summary><dl id="generation-preset-values"></dl></details>
     </section>
   </div>
@@ -201,7 +202,9 @@
     <section>
       <div class="section-heading"><span class="eyebrow">PHYSICS</span><span class="tag">TORCH DBM</span></div>
       <h2>Vehicle parameters</h2>
-      <div class="two"><button id="load-preset" class="secondary">Load terrain preset</button><button id="save-preset" class="secondary">Save preset</button></div>
+      <label>DBM config folder<input id="dbm-config-folder" placeholder="/full/path/to/configs"></label>
+      <label>DBM config filename<input id="dbm-config-filename" placeholder="mulch.yaml"></label>
+      <div class="two"><button id="load-preset" class="secondary">Load config</button><button id="save-preset" class="secondary">Save config</button></div>
       <div id="params" class="parameter-grid"></div>
       <label>Initial wheel speed (m/s)<input id="wheel-speed" type="number" step="0.1" placeholder="Estimate from recorded command history"></label>
       <button id="run-dbm" class="primary wide">Preview DBM rollout</button>

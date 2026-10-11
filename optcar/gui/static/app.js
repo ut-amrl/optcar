@@ -70,13 +70,14 @@ bind('tab-raw',()=>selectTab('raw'));bind('tab-dbm',()=>selectTab('dbm'));bind('
 bind('inspect-topics',async()=>{status('Reading recording topics…');const result=await api('/api/topics',{path:$('bag-path').value});$('topics').hidden=false;$('topics').textContent=result.topics.map(t=>`${t.topic} · ${t.type} (${t.count})`).join('\n');$('topic-options').replaceChildren();for(const topic of result.topics){const option=document.createElement('option');option.value=topic.topic;$('topic-options').append(option);}status('Choose pose, twist, and velocity/steering topics, then load the recording.');});
 bind('load-bag',async()=>{status('Loading and aligning recording…');state.playing=false;$('play').textContent='▶';const bag={pose_topic:$('pose-topic').value,twist_topic:$('twist-topic').value,command_topic:$('command-topic').value,twist_frame:$('twist-frame').value,command_type:$('command-type').value,command_shift_s:number('command-shift'),max_gap_s:number('max-gap'),timestamp_source:$('timestamp-source').value};state.session=await api('/api/bag',{path:$('bag-path').value,bag,dt:number('dt'),split:$('split').value});$('segment').replaceChildren();for(const segment of state.session.segments){const option=document.createElement('option');option.value=segment.index;option.textContent=`${segment.index+1} · ${segment.start_s.toFixed(1)}–${segment.end_s.toFixed(1)} s · ${segment.samples} samples`;$('segment').append(option);}$('segment-label').hidden=false;$('bag-state').textContent=`${state.session.segments.length} segment(s) · ${state.session.split}`;await loadSegment();status('Recording loaded. Choose a start sample and preview a trajectory.');});
 $('segment').addEventListener('change',()=>loadSegment().catch(e=>status(e.message,true)));
-bind('load-preset',async()=>{const result=await api(`/api/preset?terrain=${encodeURIComponent($('terrain').value)}`);setParams(result.params);state.calibration=result.calibration||null;status('Loaded terrain preset.');});
-bind('save-preset',async()=>{const result=await api('/api/preset',{terrain:$('terrain').value,params:params(),calibration:state.calibration,...(state.session?payload():{})});status(`Saved ${result.path}`);});
+function dbmConfigLocation(){const folder=$('dbm-config-folder').value.trim(),filename=$('dbm-config-filename').value.trim();if(!folder||!filename)throw new Error('Enter both the DBM config folder and filename.');return {folder,filename};}
+bind('load-preset',async()=>{const result=await api(`/api/preset?${new URLSearchParams(dbmConfigLocation())}`);setParams(result.params);state.calibration=result.calibration||null;status(`Loaded ${result.path}`);});
+bind('save-preset',async()=>{const result=await api('/api/preset',{...dbmConfigLocation(),params:params(),calibration:state.calibration,...(state.session?payload():{})});status(`Saved ${result.path}`);});
 bind('run-dbm',preview);bind('predict',preview);bind('preview',preview);
 bind('fit',async()=>{const keys=[...document.querySelectorAll('#fit-keys input:checked')].map(el=>el.value);if(!keys.length)throw new Error('Select at least one parameter to fit.');const result=await api('/api/fit',{...payload(),params:params(),start:number('fit-start'),end:number('fit-end'),keys});trackJob(result,'DBM identification',async fitted=>{setParams(fitted.params);state.calibration=fitted.calibration;status(`Fit ${fitted.success?'converged':'finished without convergence'}: ${fitted.initial_rmse.toFixed(4)} → ${fitted.fitted_rmse.toFixed(4)}. Preview a separate validation recording, then save the terrain preset.`);});});
 bind('export',async()=>{const result=await api('/api/export',{...payload(),terrain:$('terrain').value,run:$('export-run').value,data:dataConfig('dt')});trackJob(result,'Export real recording',async()=>status('Recording exported.'));});
 bind('refresh-devices',()=>refreshDevices());
-bind('generate',async()=>{const device=$('device').value;const commands={...state.defaults.commands,duration:number('duration'),action_bounds:[[number('velocity-min'),number('velocity-max')],[number('steering-min'),number('steering-max')]],noise_std:[number('velocity-noise'),number('steering-noise')],seed:number('seed'),parameter_randomization:0,parameter_ranges:readGenerationRanges(),bezier_full_range:$('generation-bezier-stretch').checked,resample_params_each_run:$('generation-resample').checked};const terrain=$('generation-terrain').value;const result=await api('/api/generate',{terrain,run:$('run-name').value,data:{dt:number('generation-dt')},raw_only:true,commands,runs:number('episodes'),batch_size:number('batch-size'),device});await refreshGenerationRuns();generationStatus(`Started ${result.tmux_session} on ${device}.`);});
+bind('generate',async()=>{const device=$('device').value;const commands={...state.defaults.commands,duration:number('duration'),action_bounds:[[number('velocity-min'),number('velocity-max')],[number('steering-min'),number('steering-max')]],noise_std:[number('velocity-noise'),number('steering-noise')],seed:number('seed'),parameter_randomization:0,parameter_ranges:readGenerationRanges(),bezier_full_range:$('generation-bezier-stretch').checked,resample_params_each_run:$('generation-resample').checked};const terrain=$('generation-terrain').value;const result=await api('/api/generate',{terrain,run:$('run-name').value,data:{dt:number('generation-dt')},raw_only:true,commands,runs:number('episodes'),batch_size:number('batch-size'),device,preset_path:$('generation-preset-path').value.trim()});await refreshGenerationRuns();generationStatus(`Started ${result.tmux_session} on ${device}.`);});
 bind('inspect-checkpoint',async()=>{status('Loading checkpoint…');const result=await api('/api/checkpoint',{path:$('checkpoint').value});$('checkpoint-info').textContent=`${result.model.architecture} · ${result.stage}\nHistory ${result.data.history_steps} · horizon ${result.data.future_steps}\nTimestep ${result.data.dt} s · epoch ${result.epoch+1}`;$('horizon').value=result.data.future_steps;$('current').value=Math.max(number('current'),result.data.history_steps-1);if(state.segment)setFrame(number('current'));status(`Checkpoint loaded.${state.session&&Math.abs(state.session.dt-result.data.dt)>1e-9?' Reload recording at '+result.data.dt+' s timestep.':''}`);});
 bind('refresh-data',refreshDatasets);bind('reset-view',()=>{state.zoom=1;state.pan=[0,0];drawAll();});
 $('frame').addEventListener('input',()=>setFrame(number('frame')));$('current').addEventListener('change',()=>setFrame(number('current')));
@@ -109,20 +110,25 @@ function updateGenerationSummary(){
   $('generation-steps').textContent=Math.round(Number($('duration').value)/dt).toLocaleString();
   $('generation-timestep').textContent=`${dt}s`;
   const terrain=$('generation-terrain').value.trim(),run=$('run-name').value.trim();
-  $('generation-output').textContent=`Output: ${state.defaults?.dataset_root||'datasets'}/syn_data/terrains/${terrain}/sim/${run}/`;
+  const config=$('generation-preset-path').value.trim(),slash=config.lastIndexOf('/');
+  const folder=slash<0?'.':config.slice(0,slash);
+  $('generation-output').textContent=config?`Output: ${folder}/${run}/`:`Output: ${state.defaults?.dataset_root||'datasets'}/syn_data/terrains/${terrain}/sim/${run}/`;
 }
 for(const id of ['episodes','batch-size','duration','generation-dt','generation-terrain','run-name'])$(id).addEventListener('input',updateGenerationSummary);
-$('generation-terrain').addEventListener('input',()=>{state.generationPreset=null;$('generation-preset-details').hidden=true;$('generation-preset-status').textContent='Check the saved preset for this terrain.';});
+for(const id of ['generation-terrain','generation-preset-path'])$(id).addEventListener('input',()=>{state.generationPreset=null;$('generation-preset-details').hidden=true;$('generation-preset-status').textContent=$('generation-preset-path').value.trim()?'Click Load config to inspect this YAML.':'Leave the path blank to use the saved terrain preset.';updateGenerationSummary();});
 bind('generation-load-preset',async()=>{
   $('generation-preset-details').hidden=true;
-  const terrain=$('generation-terrain').value.trim();
+  const terrain=$('generation-terrain').value.trim(),path=$('generation-preset-path').value.trim();
+  const query=new URLSearchParams({terrain});if(path)query.set('path',path);
   try{
-    const result=await api(`/api/preset?terrain=${encodeURIComponent(terrain)}`);
+    const result=await api(`/api/preset?${query}`);
+    if(path)$('generation-preset-path').value=result.path;
+    updateGenerationSummary();
     $('generation-preset-values').replaceChildren();
     for(const [key,value]of Object.entries(result.params)){const term=document.createElement('dt');term.textContent=names[key]||key;const definition=document.createElement('dd');definition.textContent=value;$('generation-preset-values').append(term,definition);}
     state.generationPreset=result.params;renderGenerationRanges(result.params,readGenerationRanges());
-    $('generation-preset-details').hidden=false;$('generation-preset-status').textContent=`Saved preset for ${terrain}. Uses the saved DBM parameters.`;
-  }catch(error){$('generation-preset-status').textContent=`Could not load the ${terrain} preset. Save it in DBM calibration first.`;throw error;}
+    $('generation-preset-details').hidden=false;$('generation-preset-status').textContent=`Loaded ${result.path}`;
+  }catch(error){$('generation-preset-status').textContent=`Could not load config: ${error.message}`;throw error;}
 });
 
 bind('generation-view',()=>state.generated&&openBinFolder(state.generated.path,'syn-bins'));

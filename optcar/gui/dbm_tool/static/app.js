@@ -1243,11 +1243,28 @@ loadReferenceSpecs();
 $("dataset_path").value ||= localStorage.getItem("optcar-dbm-folder") || localStorage.getItem("optcar-bin-folder") || "";
 
 const presetInputIds={max_steering_angle:'max_steer',wheel_time_constant:'wheel_tau',min_wheel_velocity:'min_wheel',max_wheel_velocity:'max_wheel'};
+function presetLocation(){
+  const folder=$("preset_folder").value.trim(),filename=$("preset_filename").value.trim();
+  if(!folder||!filename)throw new Error('Enter both the DBM config folder and filename.');
+  return {folder,filename};
+}
 $("load_dbm_preset").onclick=async()=>{
-  try{const response=await fetch(`/api/preset?terrain=${encodeURIComponent($("preset_terrain").value)}`);const result=await response.json();if(!response.ok)throw new Error(result.error);for(const [key,value]of Object.entries(result.params))$("p_"+(presetInputIds[key]||key)).value=value;state.dbmParams=null;state.rollout=null;if(state.lastFrameData)drawXY(state.lastFrameData);$("preset_status").textContent='Loaded. Click Set & Rollout to apply.';}catch(error){$("preset_status").textContent=error.message;}
+  try{
+    const query=new URLSearchParams(presetLocation());
+    const response=await fetch(`/api/preset?${query}`),result=await response.json();
+    if(!response.ok)throw new Error(result.error);
+    for(const [key,value]of Object.entries(result.params))$("p_"+(presetInputIds[key]||key)).value=value;
+    state.dbmParams=null;state.rollout=null;if(state.lastFrameData)drawXY(state.lastFrameData);
+    $("preset_status").textContent=`Loaded ${result.path}. Click Set & Rollout to apply.`;
+  }catch(error){$("preset_status").textContent=error.message;}
 };
 $("save_dbm_preset").onclick=async()=>{
-  try{const response=await fetch('/api/preset',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({terrain:$("preset_terrain").value,params:readParams()})});const result=await response.json();if(!response.ok)throw new Error(result.error);$("preset_status").textContent=`Saved ${result.path}`;}catch(error){$("preset_status").textContent=error.message;}
+  try{
+    const response=await fetch('/api/preset',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({...presetLocation(),params:readParams()})});
+    const result=await response.json();if(!response.ok)throw new Error(result.error);
+    $("preset_status").textContent=`Saved ${result.path}`;
+  }catch(error){$("preset_status").textContent=error.message;}
 };
 
 if($("dataset_path").value){

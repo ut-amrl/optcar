@@ -54,6 +54,7 @@ header nav{overflow-x:auto;flex-shrink:1;white-space:nowrap}.tab{flex-shrink:0}
 .generation-settings-card .check{display:flex;gap:7px;align-items:center;line-height:1.5}
 .generation-settings-card .check input{flex:none;margin:0}
 .generation-preset-check{display:flex;align-items:center;gap:12px;justify-content:space-between}.generation-preset-check button{flex:none}
+.generation-preset-check .hint{min-width:0;overflow-wrap:anywhere}
 .generation-preset details{margin:7px 0 0}.generation-preset dl{font-size:11px;gap:6px}
 .generation-overview{display:flex;flex-wrap:wrap;gap:8px 24px;font-size:10px;color:var(--muted);margin:0 0 6px}.generation-overview strong{font-size:12px;font-weight:500;color:var(--text);margin-right:4px}
 #generation-output{font-size:10px;margin:0;overflow-wrap:anywhere}

@@ -91,8 +91,11 @@
     </div>
     <div class="params-panel">
       <div class="params-title">DBM Parameters</div>
-      <label>Terrain preset<input id="preset_terrain" value="road" type="text"></label>
-      <div class="row"><button id="load_dbm_preset" type="button" class="secondary">Load preset</button><button id="save_dbm_preset" type="button" class="secondary">Save preset</button></div>
+      <div class="dbm-config-location">
+        <label>DBM config folder<input id="preset_folder" placeholder="/full/path/to/configs" type="text" spellcheck="false"></label>
+        <label>DBM config filename<input id="preset_filename" placeholder="mulch.yaml" type="text" spellcheck="false"></label>
+      </div>
+      <div class="row"><button id="load_dbm_preset" type="button" class="secondary">Load config</button><button id="save_dbm_preset" type="button" class="secondary">Save config</button></div>
       <div id="preset_status" class="status"></div>
       <div class="param-grid">
         <label for="p_len_f">len_f (m)</label>

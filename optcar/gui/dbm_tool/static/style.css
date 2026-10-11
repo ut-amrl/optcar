@@ -38,6 +38,10 @@ button:disabled { background: #9ca3af; cursor: not-allowed; }
 button.secondary { background: #e5e7eb; color: #374151; }
 button.secondary:hover { background: #d1d5db; }
 .status { font-size: 12px; color: #6b7280; min-height: 16px; margin-top: 4px; }
+.dbm-config-location { display: grid; gap: 6px; margin-bottom: 8px; }
+.dbm-config-location label { display: flex; flex-direction: column; gap: 4px; }
+.dbm-config-location input[type="text"] { width: 100%; min-width: 0; }
+#preset_status { overflow-wrap: anywhere; }
 .muted { color: #9ca3af; font-size: 11px; }
 .hidden { display: none !important; }
 .tabs {

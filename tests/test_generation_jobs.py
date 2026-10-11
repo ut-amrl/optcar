@@ -5,6 +5,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import time
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -124,3 +125,39 @@ def test_cli_launches_same_manager(tmp_path,monkeypatch,capsys):
     assert json.loads(capsys.readouterr().out)['tmux_session']=='optcar-cli-test'
     assert calls[0][:3]==(root,'road','cli')
     assert calls[0][3]['runs']==2 and calls[0][3]['commands'].duration==.08
+
+
+@pytest.mark.parametrize('wrapped', [False, True])
+def test_gui_explicit_config_and_output_location(tmp_path, monkeypatch, wrapped):
+    # No terrain preset exists, and the config is outside the GUI dataset root.
+    root = tmp_path / 'datasets'
+    config = tmp_path / 'my configs' / 'mulch.yaml'
+    params = {**asdict(DBMParams()), 'C_tire_r': 234.0, 'mass': 13.0}
+    write_yaml(config, {'params': params, 'calibration': {'label': 'mulch'}} if wrapped else params)
+    launches = []
+    monkeypatch.setattr('optcar.datagen.generation_jobs.shutil.which', lambda _: '/test/tmux')
+    def fake_tmux(argv, **kwargs):
+        if argv[1] == 'new-session':
+            launches.append(argv)
+        return SimpleNamespace(stdout='', stderr='', returncode=0)
+    monkeypatch.setattr('optcar.datagen.generation_jobs.subprocess.run', fake_tmux)
+    client = create_app(root).test_client()
+    preview = client.get('/api/preset', query_string={'terrain': 'mulch', 'path': str(config)})
+    assert preview.status_code == 200 and preview.json['params'] == params
+    assert preview.json['path'] == str(config)
+    response = client.post('/api/generate', json={'terrain': 'mulch', 'run': 'run_01',
+        'preset_path': str(config), 'device': 'cpu'})
+    assert response.status_code == 200 and len(launches) == 1
+    assert response.json['dataset'] == str(config.parent / 'run_01')
+    directory = root / '.generation_jobs' / response.json['job_id']
+    snapshot = json.loads((directory / 'request.json').read_text())
+    assert snapshot['params'] == params and snapshot['preset_path'] == str(config)
+    assert snapshot['calibration'] == ({'label': 'mulch'} if wrapped else None)
+    assert not (terrain_path(root, 'mulch') / 'dbm_params.yaml').exists()
+    # A bad explicit path must not fall back to a different terrain preset.
+    write_yaml(terrain_path(root, 'mulch') / 'dbm_params.yaml', {'params': asdict(DBMParams())})
+    missing = str(config.parent / 'missing.yaml')
+    assert client.get('/api/preset', query_string={'path': missing}).status_code == 400
+    error = client.post('/api/generate', json={'terrain': 'mulch', 'preset_path': missing})
+    assert error.status_code == 400 and 'missing.yaml' in error.json['error']
+    assert len(launches) == 1

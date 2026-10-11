@@ -238,15 +238,33 @@ def create_app(dataset_root="datasets", bag_root=None):
             return {**result, "calibration": provenance}
         return start_job(operation)
 
+    def load_preset(terrain, path=None):
+        path = Path(path).expanduser().resolve() if path else terrain_path(root, terrain) / "dbm_params.yaml"
+        config = read_config(path)
+        return {**config, "params": config.get("params", config), "path": str(path)}
+
+    def preset_location(folder, filename):
+        if not isinstance(folder, str) or not folder.strip():
+            raise ValueError("Enter the DBM config folder")
+        if not isinstance(filename, str) or not filename.strip():
+            raise ValueError("Enter the DBM config filename, including .yaml or .yml")
+        folder, filename = Path(folder.strip()).expanduser(), filename.strip()
+        if not folder.is_absolute():
+            raise ValueError("Enter the full path to the DBM config folder")
+        if Path(filename).name != filename or Path(filename).suffix.lower() not in (".yaml", ".yml"):
+            raise ValueError("Filename must be a YAML filename without a folder path")
+        return folder.resolve() / filename
+
     @app.route("/api/preset", methods=["GET", "POST"])
     @api
     def preset():
         if request.method == "GET":
-            path = terrain_path(root, request.args["terrain"]) / "dbm_params.yaml"
-            return read_config(path)
+            path = (preset_location(request.args.get("folder"), request.args.get("filename"))
+                    if "folder" in request.args or "filename" in request.args else request.args.get("path"))
+            return load_preset(request.args.get("terrain", "road"), path)
         payload = request.get_json()
+        path = preset_location(payload.get("folder"), payload.get("filename"))
         params = asdict(DBMParams(**payload["params"]))
-        path = terrain_path(root, payload["terrain"]) / "dbm_params.yaml"
         provenance = payload.get("calibration") or {}
         if not provenance and path.exists():
             provenance = read_config(path).get("calibration", {})
@@ -276,7 +294,8 @@ def create_app(dataset_root="datasets", bag_root=None):
         return generation_jobs.start(payload["terrain"], payload.get("run", "default"),
             data=payload.get("data"), commands=payload.get("commands"),
             runs=payload.get("runs", payload.get("episodes", 10)), batch_size=payload.get("batch_size", 32),
-            device=payload.get("device", "cpu"))
+            device=payload.get("device", "cpu"),
+            preset=load_preset(payload["terrain"], payload["preset_path"]) if payload.get("preset_path") else None)
 
     @app.get("/api/generation/runs")
     @api
