@@ -15,12 +15,14 @@ from optcar.dataset import DataConfig
 from optcar.datagen.rosbag_to_dataset import BagConfig, export_bag, load_bag, topics
 from optcar.datagen.raw_bins import scan_bins, inspect_bin, bin_frame, action_window
 from optcar.datagen.raw_bags import RawBagConfig, convert_raw_bags, discover_bags
-from optcar.datagen.dbm_to_dataset import CommandConfig, generate
+from optcar.datagen.dbm_to_dataset import CommandConfig, generate, randomization_parameters
+from optcar.datagen.build_dataset import build_dataset, inspect_sources
 from optcar.models.dbm_calibration import DEFAULT_FIT_KEYS, fit_parameters, wheel_history
 from optcar.models.dynamic_bicycle import DBMParams, DynamicBicycleModel
 from optcar.models.fkd_transformer import load_checkpoint, predict_window, trajectory_metrics
 from optcar.utils.file_io import read_config, safe_name, terrain_path, write_yaml
 from optcar.utils.math import qinverse_torch, qrotate_torch, yaw_from_quat_torch
+from optcar.utils.devices import available_devices, resolve_device
 
 
 def create_app(dataset_root="datasets", bag_root=None):
@@ -141,8 +143,14 @@ def create_app(dataset_root="datasets", bag_root=None):
     @api
     def defaults():
         return {"params": asdict(DBMParams()), "data": asdict(DataConfig()), "commands": asdict(CommandConfig()),
+                "generation_parameters": randomization_parameters(),
                 "bag": asdict(BagConfig()), "fit_keys": DEFAULT_FIT_KEYS, "dataset_root": str(root),
                 "raw_bag": asdict(RawBagConfig()), "raw_root": str(bag_root or "")}
+
+    @app.get("/api/devices")
+    @api
+    def devices():
+        return available_devices()
 
     @app.post("/api/topics")
     @api
@@ -261,14 +269,30 @@ def create_app(dataset_root="datasets", bag_root=None):
     @api
     def generate_data():
         payload = request.get_json()
+        device = resolve_device(payload.get("device", "cpu"))
         terrain = terrain_path(root, payload["terrain"])
         preset = read_config(terrain / "dbm_params.yaml")
         path = terrain / "sim" / safe_name(payload.get("run", "default"))
         return start_job(lambda progress, cancelled: generate(path, payload["terrain"], preset["params"],
             DataConfig(**payload.get("data", {})), CommandConfig(**payload.get("commands", {})),
-            episodes=int(payload.get("episodes", 1000)), batch_size=int(payload.get("batch_size", 128)),
-            device=payload.get("device", "cpu"), progress=progress, cancelled=cancelled,
-            calibration=preset.get("calibration")))
+            runs=int(payload.get("runs", payload.get("episodes", 10))), batch_size=int(payload.get("batch_size", 32)),
+            device=device, progress=progress, cancelled=cancelled,
+            calibration=preset.get("calibration"), process_windows=not payload.get("raw_only", True)))
+
+    @app.post("/api/dataset-builder/inspect")
+    @api
+    def inspect_dataset_sources():
+        payload = request.get_json()
+        return inspect_sources(payload["sources"], DataConfig(**payload.get("data", {})),
+                               payload.get("seed", 42), payload.get("fractions", [.8, .1, .1]))
+
+    @app.post("/api/dataset-builder/build")
+    @api
+    def assemble_dataset():
+        payload = request.get_json()
+        data = DataConfig(**payload.get("data", {}))
+        return start_job(lambda progress, cancelled: build_dataset(payload["output"], payload["sources"],
+            data, payload.get("seed", 42), payload.get("fractions", [.8, .1, .1]), progress, cancelled))
 
     @app.get("/api/jobs/<identifier>")
     @api
@@ -292,7 +316,9 @@ def create_app(dataset_root="datasets", bag_root=None):
             counts = {split: sum(e["windows"] for e in doc["episodes"].values() if e["split"] == split)
                       for split in ("train", "val", "test")}
             results.append({"path": str(path.parent.relative_to(root)), "terrain": doc["terrain"],
-                            "source": doc["source"], "windows": counts})
+                            "source": doc["source"], "windows": counts,
+                            "episodes": sum(e["raw_shape"][0] if len(e["raw_shape"]) == 3 else 1 for e in doc["episodes"].values()),
+                            "files": len(doc["episodes"]), "batched": doc.get("num_envs", 1) > 1, "stage": "processed" if doc.get("process_windows", True) else "raw"})
         return {"datasets": results}
 
     @app.post("/api/checkpoint")

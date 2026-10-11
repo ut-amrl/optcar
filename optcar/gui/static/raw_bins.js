@@ -1,12 +1,43 @@
 'use strict';
 // Raw layout and signal groups follow WheeledLab extractor.py / plot_sim_bins.py.
-const binState={scan:null,data:null,current:0,row:null,forward:null,playing:false,zoom:1,pan:[0,0],opened:new Set(),loadVersion:0,frameVersion:0,request:null,actions:null,actionVersion:0};
+const binState={mode:'bins',scan:null,data:null,current:0,row:null,forward:null,playing:false,zoom:1,pan:[0,0],opened:new Set(),loadVersion:0,frameVersion:0,request:null,actions:null,actionVersion:0};
 const binColors=['#6bd1d6','#c2ed80','#eab58a','#c69ced'];
 const binGroups=[{title:'Position',unit:'m',columns:[0,1,2],labels:['x','y','z']},{title:'Orientation',unit:'quaternion · wxyz',columns:[3,4,5,6],labels:['w','x','y','z']},{title:'Linear velocity',unit:'world · m/s',columns:[7,8,9],labels:['x','y','z']},{title:'Angular velocity',unit:'world · rad/s',columns:[10,11,12],labels:['x','y','z']}];
 const binValue=value=>Number.isFinite(value)?value.toFixed(3):'—';
+// Both viewer tabs use this same reader, explorer, frame cursor, and plotting code.
+const binViewerInputs=['bin-root','bin-filter','bin-dt','bin-columns','bin-envs','bin-action-mode','bin-action-before','bin-action-after','bin-velocity-min','bin-velocity-max','bin-steering-min','bin-steering-max','bin-speed'];
+const binViewerDefaults=Object.fromEntries(binViewerInputs.map(id=>[id,$(id).value]));
+const binViewerSaved={};
+async function switchBinViewer(mode){
+  if(mode===binState.mode)return;
+  binViewerSaved[binState.mode]={inputs:Object.fromEntries(binViewerInputs.map(id=>[id,$(id).value])),scan:binState.scan,path:binState.data?.path,environment:binState.data?.env_index||0,current:binState.current,opened:[...binState.opened]};
+  clearBin();binState.mode=mode;
+  const saved=binViewerSaved[mode];
+  const defaults={...binViewerDefaults,'bin-root':mode==='syn-bins'?(localStorage.getItem('optcar-syn-bin-folder')||state.defaults?.dataset_root+'/syn_data/terrains'):(localStorage.getItem('optcar-bin-folder')||'')};
+  for(const id of binViewerInputs)$(id).value=(saved?.inputs||defaults)[id];
+  const synthetic=mode==='syn-bins';
+  $('bin-browser-title').textContent=synthetic?'Browse synthetic bins.':'Browse your raw bins.';
+  $('bin-viewer-heading').textContent=synthetic?'SYNTHETIC DATA VIEWER':'RAW BIN VIEWER';
+  $('bin-browser').setAttribute('aria-label',synthetic?'Synthetic bin folder browser':'Raw bin folder browser');
+  $('bin-env-title').textContent=synthetic?'Batch index (0-based)':'Environment';
+  $('bin-batch-info').hidden=!synthetic;
+  binState.scan=saved?.scan||null;binState.opened=new Set(saved?.opened||[]);clearBin();renderBinTree();refreshBinActions();
+  if(saved?.path){
+    const version=binState.loadVersion+1;await loadRawBin(saved.path,saved.environment);
+    if(version===binState.loadVersion&&mode===binState.mode)await setBinFrame(saved.current);
+  }
+}
+function updateBinBatchInfo(){
+  const data=binState.data,synthetic=binState.mode==='syn-bins';
+  $('bin-env-label').hidden=!synthetic&&(!data||data.num_envs===1);
+  $('bin-env').disabled=!data||data.num_envs===1;
+  if(!data){$('bin-env').replaceChildren(new Option('0','0'));}
+  $('bin-batch-info').hidden=!synthetic;
+  $('bin-batch-info').textContent=!data?'Each synthetic bin stores a run as [batch, timestep, feature]. Select a trajectory with its batch index; legacy single-episode files use 0.':data.num_envs===1?'This bin contains one episode: batch index 0. Choose another file to view a different episode.':`${data.num_envs} trajectories in this bin. Select batch index 0–${data.num_envs-1}; every plot follows that trajectory.`;
+}
 function binOptions(){const out={};for(const [key,id]of [['dt','bin-dt'],['columns','bin-columns'],['num_envs','bin-envs']])if($(id).value!=='')out[key]=number(id);return out;}
 function stopBinPlayback(){binState.playing=false;$('bin-play').textContent='▶';$('bin-play').setAttribute('aria-label','Play raw bin');}
-function clearBin(){stopBinPlayback();binState.loadVersion++;binState.frameVersion++;binState.actionVersion++;binState.actions=null;$('bin-action-time').textContent='Current: —';binState.data=null;$('bin-tune-dbm').disabled=true;binState.row=null;binState.forward=null;$('bin-forward-source').hidden=true;for(const id of ['bin-command-value','bin-forward-value','bin-steer-value'])$(id).textContent='—';for(const id of ['bin-unshifted-value','bin-unshifted-steer-value'])$(id).hidden=true;$('bin-summary').hidden=true;$('bin-empty').hidden=false;$('bin-stats').hidden=true;$('bin-warning').hidden=true;$('bin-title').textContent='Inspect the recorded motion.';$('bin-path').textContent='Choose a raw bin from the folder browser.';$('bin-frame-info').textContent='No sample selected';$('bin-signals').replaceChildren();for(const id of ['bin-play','bin-frame','bin-current'])$(id).disabled=true;drawBins();}
+function clearBin(){stopBinPlayback();binState.loadVersion++;binState.frameVersion++;binState.actionVersion++;binState.actions=null;$('bin-action-time').textContent='Current: —';binState.data=null;$('bin-tune-dbm').disabled=true;binState.row=null;binState.forward=null;$('bin-forward-source').hidden=true;for(const id of ['bin-command-value','bin-forward-value','bin-steer-value'])$(id).textContent='—';for(const id of ['bin-unshifted-value','bin-unshifted-steer-value'])$(id).hidden=true;$('bin-summary').hidden=true;$('bin-empty').hidden=false;$('bin-stats').hidden=true;$('bin-warning').hidden=true;$('bin-title').textContent=binState.mode==='syn-bins'?'Inspect synthetic motion.':'Inspect the recorded motion.';updateBinBatchInfo();$('bin-path').textContent='Choose a raw bin from the folder browser.';$('bin-frame-info').textContent='No sample selected';$('bin-signals').replaceChildren();for(const id of ['bin-play','bin-frame','bin-current'])$(id).disabled=true;drawBins();}
 function renderBinTree(){
   const tree=$('bin-tree');
   const count=OptCarBinExplorer.render({tree,entries:binState.scan?.bins||[],filter:$('bin-filter').value,opened:binState.opened,selected:binState.data?.path,onSelect:path=>loadRawBin(path).catch(e=>status(e.message,true)),formatDuration:clockText});
@@ -16,11 +47,11 @@ function renderBinTree(){
 async function scanBinFolder(){
   const version=binState.loadVersion+1;clearBin();status('Reading raw bin folders…');
   const result=await api('/api/raw-bins/scan',{path:$('bin-root').value.trim(),...binOptions()});
-  if(version!==binState.loadVersion)return;binState.scan=result;$('bin-root').value=result.root;localStorage.setItem('optcar-bin-folder',result.root);binState.opened.clear();
+  if(version!==binState.loadVersion)return;binState.scan=result;$('bin-root').value=result.root;localStorage.setItem(binState.mode==='syn-bins'?'optcar-syn-bin-folder':'optcar-bin-folder',result.root);binState.opened.clear();
   const first=result.bins.find(b=>!b.error);if(first){const parts=first.relative_path.split('/');parts.pop();let path='';for(const folder of parts){path+=folder+'/';binState.opened.add(path);}}
   renderBinTree();if(first)await loadRawBin(first.path);else status(result.bins.length?'No readable bins. Check the layout settings.':'No .bin files found in this folder.',Boolean(result.bins.length));
 }
-async function openBinFolder(path){if(!path)throw new Error('No output folder available.');selectTab('bins');$('bin-root').value=path;$('bin-filter').value='';for(const id of ['bin-dt','bin-columns','bin-envs'])$(id).value='';await scanBinFolder();$('bin-title').scrollIntoView({behavior:'smooth',block:'start'});}
+async function openBinFolder(path,mode='bins'){if(!path)throw new Error('No output folder available.');selectTab(mode);$('bin-root').value=path;$('bin-filter').value='';for(const id of ['bin-dt','bin-columns','bin-envs'])$(id).value='';await scanBinFolder();$('bin-title').scrollIntoView({behavior:'smooth',block:'start'});}
 async function loadRawBin(path,environment=0){
   clearBin();const version=binState.loadVersion;status(`Opening ${path.split('/').pop()}…`);
   const data=await api('/api/raw-bins/open',{path,...binOptions(),env_index:environment});if(version!==binState.loadVersion)return;
@@ -28,7 +59,7 @@ async function loadRawBin(path,environment=0){
   binState.request={path:data.path,dt:data.dt,columns:data.columns,num_envs:data.num_envs,env_index:data.env_index};
   $('bin-empty').hidden=true;$('bin-title').textContent=data.name;$('bin-path').textContent=data.path;$('bin-summary').hidden=false;
   $('bin-duration').textContent=`${clockText(data.duration_s)} duration`;$('bin-samples').textContent=`${data.samples.toLocaleString()} samples`;$('bin-layout').textContent=`${data.dt}s timestep · ${data.columns} channels`;
-  $('bin-env-label').hidden=data.num_envs===1;$('bin-env').replaceChildren();for(let i=0;i<data.num_envs;i++){const option=document.createElement('option');option.value=i;option.textContent=i;option.selected=i===data.env_index;$('bin-env').append(option);}
+  updateBinBatchInfo();$('bin-env').replaceChildren();for(let i=0;i<data.num_envs;i++){const option=document.createElement('option');option.value=i;option.textContent=i;option.selected=i===data.env_index;$('bin-env').append(option);}
   for(const id of ['bin-frame','bin-current']){$(id).max=data.samples-1;$(id).value=0;$(id).disabled=false;}$('bin-play').disabled=data.samples<2;
   $('bin-signals').replaceChildren();binGroups.forEach((group,i)=>{const panel=document.createElement('div');const heading=document.createElement('div');heading.className='plot-heading';heading.textContent=group.title;const unit=document.createElement('small');unit.textContent=group.unit;heading.append(unit);const legend=document.createElement('div');legend.className='bin-signal-legend';for(const [j,column]of group.columns.entries()){if(column>=data.columns)continue;const item=document.createElement('span');item.style.color=binColors[j];item.id=`bin-value-${column}`;legend.append(item);}const plot=document.createElement('canvas');plot.id=`bin-signal-${i}`;plot.setAttribute('aria-label',`${group.title} over time`);plot.addEventListener('click',event=>{const rect=plot.getBoundingClientRect();const fraction=Math.max(0,Math.min(1,(event.clientX-rect.left-48)/(rect.width-64)));setBinFrame(Math.round(fraction*(data.samples-1)));});panel.append(heading,legend,plot);$('bin-signals').append(panel);});
   $('bin-stat-rows').replaceChildren();for(const stat of data.stats){const row=document.createElement('div');const name=document.createElement('span');name.textContent=stat.name;const value=document.createElement('span');value.textContent=`${binValue(stat.min)} … ${binValue(stat.max)} · ${stat.missing} missing`;row.append(name,value);$('bin-stat-rows').append(row);}$('bin-stats').hidden=false;
@@ -108,19 +139,19 @@ function drawBinCommandPanels(){
   $('bin-command-value').textContent=`Command ${binValue(binState.row?.[13])}`;$('bin-forward-value').textContent=`Body x ${binValue(binState.forward)}`;$('bin-steer-value').textContent=`Command ${binValue(binState.row?.[14])}`;
   $('bin-unshifted-value').hidden=data.columns!==17;$('bin-unshifted-steer-value').hidden=data.columns!==17;if(data.columns===17){$('bin-unshifted-value').textContent=`Unshifted ${binValue(binState.row?.[15])}`;$('bin-unshifted-steer-value').textContent=`Unshifted ${binValue(binState.row?.[16])}`;}
 }
-function drawBins(){if(state.tab!=='bins')return;drawBinTrajectory();drawBinCommandPanels();if(!binState.data)return;binGroups.forEach((g,i)=>drawBinSignal(i,g));$('bin-frame-info').textContent=`Sample ${binState.current.toLocaleString()} / ${(binState.data.samples-1).toLocaleString()} · ${(binState.current*binState.data.dt).toFixed(2)} s`;}
+function drawBins(){if(!['bins','syn-bins'].includes(state.tab))return;drawBinTrajectory();drawBinCommandPanels();if(!binState.data)return;binGroups.forEach((g,i)=>drawBinSignal(i,g));$('bin-frame-info').textContent=`Sample ${binState.current.toLocaleString()} / ${(binState.data.samples-1).toLocaleString()} · ${(binState.current*binState.data.dt).toFixed(2)} s`;}
 bind('tab-bins',()=>selectTab('bins'));bind('bin-scan',scanBinFolder);bind('bin-apply',scanBinFolder);
 bind('bin-collapse',()=>{binState.opened.clear();$('bin-filter').value='';for(const folder of $('bin-tree').querySelectorAll('details'))folder.open=false;});
 $('bin-filter').addEventListener('input',renderBinTree);
-$('bin-env').addEventListener('change',()=>loadRawBin(binState.data.path,number('bin-env')).catch(e=>status(e.message,true)));
+$('bin-env').addEventListener('change',async()=>{if(!binState.data)return;const current=binState.current,version=binState.loadVersion+1;try{await loadRawBin(binState.data.path,number('bin-env'));if(version===binState.loadVersion)await setBinFrame(current);}catch(e){status(e.message,true);}});
 $('bin-frame').addEventListener('input',()=>{stopBinPlayback();setBinFrame(number('bin-frame'));});$('bin-current').addEventListener('input',()=>{if($('bin-current').value==='')return;stopBinPlayback();setBinFrame(number('bin-current'));});
 bind('bin-play',()=>{if(!binState.data)return;if(binState.playing){stopBinPlayback();return;}if(binState.current>=binState.data.samples-1)setBinFrame(0);binState.playing=true;$('bin-play').textContent='Ⅱ';$('bin-play').setAttribute('aria-label','Pause raw bin');});
-let binTick=performance.now(),binCarry=0;setInterval(()=>{const now=performance.now(),elapsed=now-binTick;binTick=now;if(!binState.playing||!binState.data||state.tab!=='bins'){binCarry=0;return;}binCarry+=elapsed/1000*number('bin-speed')/binState.data.dt;const steps=Math.floor(binCarry);if(!steps)return;binCarry-=steps;const next=binState.current+steps;setBinFrame(next);if(next>=binState.data.samples-1)stopBinPlayback();},100);
+let binTick=performance.now(),binCarry=0;setInterval(()=>{const now=performance.now(),elapsed=now-binTick;binTick=now;if(!binState.playing||!binState.data||!['bins','syn-bins'].includes(state.tab)){binCarry=0;return;}binCarry+=elapsed/1000*number('bin-speed')/binState.data.dt;const steps=Math.floor(binCarry);if(!steps)return;binCarry-=steps;const next=binState.current+steps;setBinFrame(next);if(next>=binState.data.samples-1)stopBinPlayback();},100);
 bind('bin-reset',()=>{binState.zoom=1;binState.pan=[0,0];drawBins();});
 bind('bin-toggle-browser',()=>{const closed=$('bins-workspace').classList.toggle('bin-browser-closed');$('bin-toggle-browser').textContent=closed?'Show browser':'Hide browser';$('bin-toggle-browser').setAttribute('aria-expanded',String(!closed));drawBins();});
 const binPlot=$('bin-trajectory');let binDrag=null;binPlot.addEventListener('wheel',event=>{event.preventDefault();binState.zoom=Math.max(.1,Math.min(30,binState.zoom*Math.exp(-event.deltaY*.001)));drawBins();},{passive:false});binPlot.addEventListener('pointerdown',event=>{binDrag=[event.clientX,event.clientY,...binState.pan];binPlot.setPointerCapture(event.pointerId);});binPlot.addEventListener('pointermove',event=>{if(binDrag){binState.pan=[binDrag[2]+event.clientX-binDrag[0],binDrag[3]+event.clientY-binDrag[1]];drawBins();}});for(const event of ['pointerup','pointercancel'])binPlot.addEventListener(event,()=>binDrag=null);
 new ResizeObserver(drawBins).observe(binPlot);
-document.addEventListener('keydown',event=>{if(state.tab!=='bins'||['INPUT','SELECT','TEXTAREA','BUTTON'].includes(event.target.tagName))return;if(event.code==='Space'){event.preventDefault();$('bin-play').click();}if(event.code==='ArrowRight'||event.code==='ArrowLeft'){event.preventDefault();stopBinPlayback();setBinFrame(binState.current+(event.code==='ArrowRight'?1:-1));}});
+document.addEventListener('keydown',event=>{if(!['bins','syn-bins'].includes(state.tab)||['INPUT','SELECT','TEXTAREA','BUTTON'].includes(event.target.tagName))return;if(event.code==='Space'){event.preventDefault();$('bin-play').click();}if(event.code==='ArrowRight'||event.code==='ArrowLeft'){event.preventDefault();stopBinPlayback();setBinFrame(binState.current+(event.code==='ArrowRight'?1:-1));}});
 $('bin-root').value=localStorage.getItem('optcar-bin-folder')||'';
 
 for(const id of ['bin-forward-plot','bin-command-steer'])$(id).addEventListener('click',event=>{if(!binState.data)return;let range;try{range=actionRange();}catch{return;}const rect=event.currentTarget.getBoundingClientRect();const left=rect.width<190?33:43;const fraction=Math.max(0,Math.min(1,(event.clientX-rect.left-left)/(rect.width-left-9)));const time=range?binState.current*binState.data.dt-range.before+fraction*(range.before+range.after):fraction*binState.data.duration_s;stopBinPlayback();setBinFrame(Math.round(time/binState.data.dt));});

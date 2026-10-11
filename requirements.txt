@@ -1,9 +1,10 @@
-# Bag conversion and existing local GUI. CPU Torch serves the existing DBM tabs.
+# One dependency file, including the official GPU-enabled Torch build.
+--extra-index-url https://download.pytorch.org/whl/cu128
 numpy>=1.24,<3
 scipy>=1.10,<2
 PyYAML>=6,<7
 Flask>=3,<4
 rosbags>=0.11,<0.12
 rich>=13,<15
-torch>=2.1,<3
+torch==2.11.0+cu128
 joblib>=1.4,<2

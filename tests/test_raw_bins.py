@@ -77,6 +77,34 @@ def test_multi_environment_order_and_invalid_files(tmp_path):
     assert scan['bins'][0]['error']
 
 
+@pytest.mark.parametrize('width', [15, 17])
+def test_packed_synthetic_batch_metadata_routes(tmp_path, width):
+    file = tmp_path / 'raw/batch.bin'
+    first = recording(file, steps=501, columns=width)
+    second = first.copy()
+    second[:, 1] = np.arange(501) * .2
+    second[:, 7] = 3
+    second[:, 13] = 4
+    np.stack([first, second]).tofile(file)
+    metadata = tmp_path / 'metadata'
+    metadata.mkdir()
+    (metadata / 'dataset_config.py').write_text(
+        f'class DatasetConfig:\n    num_envs = 2\n    control_dt = .02\n    feature_dim = {width}\n')
+    client = create_app(tmp_path / 'datasets').test_client()
+    scan = client.post('/api/raw-bins/scan', json={'path': str(tmp_path)}).json
+    assert scan['bins'][0]['num_envs'] == 2
+    assert scan['bins'][0]['samples'] == 501 and scan['bins'][0]['duration_s'] == 10
+    request = {'path': str(file), 'env_index': 1}
+    view = client.post('/api/raw-bins/open', json=request).json
+    assert view['env_index'] == 1 and view['frame'] == second[0].tolist()
+    frame = client.post('/api/raw-bins/frame', json={**request, 'index': 500}).json
+    assert frame['row'] == second[-1].tolist() and frame['forward_velocity'] == 3
+    actions = client.post('/api/raw-bins/actions', json={**request, 'index': 250, 'before_s': .04, 'after_s': .02}).json
+    assert actions['commands'] == second[248:252, 13:].tolist()
+    assert actions['forward_velocity'] == [3.] * 4
+    assert client.post('/api/raw-bins/open', json={**request, 'env_index': 2}).status_code == 400
+
+
 def test_viewer_routes_and_bad_metadata_width(tmp_path):
     file = tmp_path / 'data/run.bin'
     rows = recording(file)

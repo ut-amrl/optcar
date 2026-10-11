@@ -13,6 +13,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset, Sampler
 
+from optcar.utils.filter import quaternion_continuity_filter_batch
 from optcar.utils.file_io import atomic_text, safe_name, write_json
 from optcar.utils.frame_transforms import compute_delta_frame_representation, horizon_world_to_body_frame
 from optcar.utils.math import qmultiply_torch, qrotate_torch
@@ -43,13 +44,23 @@ SCHEMA = {"version": 1, "dtype": "float32", "features": 42,
           "action_timing": "action[t] drives state[t] to state[t+1]",
           "future_steps": "number of transitions after current state"}
 
+RAW_SCHEMA = {"version": 1, "dtype": "float32", "features": 15,
+              "layout": ["world_state:13", "commands:2"], "quaternion_order": "wxyz",
+              "action_timing": "action[t] drives state[t] to state[t+1]"}
+
 
 def pack_windows(states, actions, history_steps, vehicle_id=0):
     """states/actions: [B,T,13/2]; body features anchored to current state."""
-    states = torch.as_tensor(states, dtype=torch.float32)
+    # Same per-window continuity and frame conversion as WheeledLab's
+    # DatasetProcessor._process_chunks_to_frames_torch (base.py).
+    states = torch.as_tensor(states, dtype=torch.float32).clone()
     actions = torch.as_tensor(actions, dtype=torch.float32, device=states.device)
+    states[:, :, 3:7] = quaternion_continuity_filter_batch(
+        states[:, :, 3:7], batch_dim=0, time_dim=1, inplace=True)
     current = states[:, history_steps - 1]
-    body = torch.cat(horizon_world_to_body_frame(states, current[:, :3], current[:, 3:7]), -1)
+    pos, quat, vel, ang = horizon_world_to_body_frame(states, current[:, :3], current[:, 3:7])
+    quat = quaternion_continuity_filter_batch(quat, batch_dim=0, time_dim=1, inplace=True)
+    body = torch.cat((pos, quat, vel, ang), -1)
     delta = compute_delta_frame_representation(states)
     car = states.new_full((*states.shape[:2], 1), float(vehicle_id))
     return torch.cat((states, body, delta, actions, car), -1)
@@ -85,7 +96,7 @@ def integrate_deltas(deltas, origin=None):
 
 
 def session_split(session, seed=42, fractions=(0.8, 0.1, 0.1)):
-    if len(fractions) != 3 or any(x < 0 for x in fractions) or abs(sum(fractions) - 1) > 1e-6:
+    if len(fractions) != 3 or any(not math.isfinite(x) or x < 0 for x in fractions) or abs(sum(fractions) - 1) > 1e-6:
         raise ValueError("Split fractions must be three nonnegative numbers summing to one")
     value = int(hashlib.sha256(f"{seed}:{session}".encode()).hexdigest()[:16], 16) / 2**64
     return "train" if value < fractions[0] else "val" if value < sum(fractions[:2]) else "test"
@@ -93,8 +104,9 @@ def session_split(session, seed=42, fractions=(0.8, 0.1, 0.1)):
 
 class DatasetWriter:
     """One active writer per dataset. Manifest commits make restarts idempotent."""
-    def __init__(self, root, config, source, terrain, provenance=None):
+    def __init__(self, root, config, source, terrain, provenance=None, process_windows=True):
         self.root, self.config = Path(root), config
+        self.process_windows = process_windows
         self.root.mkdir(parents=True, exist_ok=True)
         self.lock = (self.root / ".writer.lock").open("a")
         import fcntl
@@ -111,8 +123,11 @@ class DatasetWriter:
                 actual = tuple(self.manifest[k] for k in ("config", "source", "terrain", "provenance"))
                 if actual != expected:
                     raise ValueError("Dataset configuration changed; choose a new output directory")
+                if self.manifest.get("process_windows", True) != process_windows:
+                    raise ValueError("Raw generation and dataset building need separate output directories")
             else:
-                self.manifest = {"schema": SCHEMA, "config": asdict(config), "source": source,
+                self.manifest = {"schema": SCHEMA if process_windows else RAW_SCHEMA,
+                                 "process_windows": process_windows, "config": asdict(config), "source": source,
                                  "terrain": terrain, "provenance": provenance or {}, "episodes": {}}
                 write_json(self.path, self.manifest)
             self.session_splits = {e["session"]: e["split"] for e in self.manifest["episodes"].values()}
@@ -151,24 +166,22 @@ class DatasetWriter:
             return 0
         states = np.asarray(states, dtype=np.float32)
         actions = np.asarray(actions, dtype=np.float32)
-        if states.ndim != 2 or states.shape[1] != 13 or actions.shape != (len(states) - 1, 2):
-            raise ValueError("Expected T+1 states [13] and T commands [2]")
+        if states.ndim != 2 or states.shape[1] != 13 or actions.shape not in ((len(states) - 1, 2), (len(states), 2)):
+            raise ValueError("Expected states [T,13] and commands [T-1,2] or [T,2]")
         if not np.isfinite(states).all() or not np.isfinite(actions).all():
             raise ValueError("Nonfinite episode values")
         norms = np.linalg.norm(states[:, 3:7], axis=-1)
         if np.any(norms < 1e-6):
             raise ValueError("Zero quaternion in episode")
         states = states.copy()
-        states[:, 3:7] /= norms[:, None]
-        adjacent_dot = np.sum(states[:-1, 3:7] * states[1:, 3:7], axis=-1)
-        signs = np.r_[1.0, np.cumprod(np.where(adjacent_dot < 0, -1.0, 1.0))]
-        states[:, 3:7] *= signs[:, None]
-        actions = np.concatenate((actions, np.zeros((1, 2), np.float32)))
+        # Preserve recorded quaternion values, as WheeledLab processing does.
+        if len(actions) == len(states) - 1:
+            actions = np.concatenate((actions, np.zeros((1, 2), np.float32)))
         raw_file = f"raw/{episode}.bin"
         self._binary(raw_file, np.concatenate((states, actions), -1))
         shards, count = [], 0
         cfg = self.config
-        starts = range(0, len(states) - cfg.window_steps + 1, cfg.stride)
+        starts = range(0, len(states) - cfg.window_steps + 1, cfg.stride) if self.process_windows else range(0)
         for offset in range(0, len(starts), cfg.shard_windows):
             selected = starts[offset:offset + cfg.shard_windows]
             s = np.stack([states[i:i + cfg.window_steps] for i in selected])
@@ -197,6 +210,14 @@ class DatasetWriter:
 
     def _metadata(self):
         cfg = self.config
+        if self.manifest["provenance"].get("pipeline") == "wheeledlab_batched_v1":
+            return  # The copied DataCollector writes the full WheeledLab metadata.
+        # Both raw generation and assembled datasets keep viewer-readable raw metadata.
+        write_json(self.root / "metadata/schema.json", RAW_SCHEMA)
+        atomic_text(self.root / "metadata/dataset_config.py",
+                    f"class DatasetConfig:\n    control_dt = {cfg.dt!r}\n    feature_dim = 15\n    num_envs = 1\n")
+        if not self.process_windows:
+            return
         counts = [s["shape"][0] for e in self.manifest["episodes"].values() for s in e["shards"]]
         # FKD's future_horizon includes the current state; ours counts transitions.
         fields = {"history_horizon": cfg.history_steps, "future_horizon": cfg.future_steps + 1,
@@ -233,11 +254,12 @@ class FKDDataset(Dataset):
                     continue
                 if doc["schema"].get("features") != 42 or doc["schema"].get("dtype") != "float32":
                     raise ValueError(f"Unsupported feature layout in {path}")
-                calibration = doc.get("provenance", {}).get("calibration", {})
-                if calibration.get("session"):
-                    if calibration.get("split") != "train":
-                        raise ValueError(f"Synthetic dataset was calibrated from held-out data: {path}")
-                    calibrations.add(calibration["session"])
+                provenance = doc.get("provenance", {})
+                for calibration in [provenance.get("calibration", {}), *provenance.get("calibrations", [])]:
+                    if calibration.get("session"):
+                        if calibration.get("split") != "train":
+                            raise ValueError(f"Synthetic dataset was calibrated from held-out data: {path}")
+                        calibrations.add(calibration["session"])
                 for key in ("history_steps", "future_steps", "dt"):
                     if doc["config"][key] != getattr(config, key):
                         raise ValueError(f"{path}: {key} differs from training configuration")

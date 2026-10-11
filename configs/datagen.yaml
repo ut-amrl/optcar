@@ -10,11 +10,18 @@ commands:
   noise_std: [0.2, 0.0]
   curve_methods: [[bezier], [random_walk]]
   offset_fraction: 0.0
+  bezier_full_range: true  # false: keep sampled control points, without full-range stretching
   seed: 42
-  initial_velocity: [0.0, 0.0]
-  initial_yaw: [0.0, 0.0]
+  initial_yaw: null  # Use start_rot_yaw from the environment parameter preset
   parameter_randomization: 0.0
-episodes: 1000
-batch_size: 128
+  parameter_ranges: {}
+  resample_params_each_run: false
+  fix_control_seed: false
+  fix_run_seed: false
+  env_spacing: 2.5
+  max_velocity: 7.5
+  max_lateral_acceleration_mps2: 10.0
+runs: 10
+batch_size: 32
 device: cpu
 fractions: [0.8, 0.1, 0.1]

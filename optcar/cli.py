@@ -16,7 +16,7 @@ def _bag_config(path):
     return BagConfig(**(read_config(path) if path else {}))
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(prog="optcar", description="Offline vehicle dynamics workbench")
     commands = parser.add_subparsers(dest="command", required=True)
     init = commands.add_parser("init", help="Create empty data/checkpoint directories")
@@ -59,9 +59,13 @@ def main():
     generate.add_argument("--terrain", required=True)
     generate.add_argument("--dataset-root", default="datasets")
     generate.add_argument("--run", default="default")
-    generate.add_argument("--episodes", type=int)
+    generate.add_argument("--runs", "--episodes", dest="runs", type=int, help="Number of batched runs / bin files (--episodes is a legacy alias)")
     generate.add_argument("--batch-size", type=int)
-    generate.add_argument("--device")
+    generate.add_argument("--device", help="cpu or a visible GPU index, e.g. cuda:0 or cuda:1")
+    generate.add_argument("--raw-only", action="store_true", help="Save raw episodes only, for the Dataset builder")
+
+    build = commands.add_parser("build-dataset", help="Build FKD windows from selected real and synthetic raw bins")
+    build.add_argument("--config", required=True, help="YAML with sources, data, output, seed and fractions")
 
     convert = commands.add_parser("convert", help="Convert a complete bag to FKD bins")
     convert.add_argument("bag")
@@ -114,7 +118,7 @@ def main():
     predict.add_argument("--horizon", type=int)
     predict.add_argument("--device", default="cpu")
     predict.add_argument("--output", required=True)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     try:
         _dispatch(args)
     except (ValueError, OSError, ImportError) as exc:
@@ -143,14 +147,29 @@ def _dispatch(args):
         preset = read_config(args.params or target_preset)
         if not target_preset.exists():
             write_yaml(target_preset, preset)
-        result = generate(terrain / "sim" / safe_name(args.run), args.terrain, preset.get("params", preset),
-            DataConfig(**cfg.get("data", {})), CommandConfig(**cfg.get("commands", {})),
-            episodes=args.episodes if args.episodes is not None else cfg.get("episodes", 1000),
-            batch_size=args.batch_size if args.batch_size is not None else cfg.get("batch_size", 128),
-            device=args.device or cfg.get("device", "cpu"), fractions=cfg.get("fractions", [0.8, 0.1, 0.1]),
-            progress=lambda p: print(f"Episodes {p['completed']}/{p['total']} · new windows {p['new_windows']}", flush=True)
-                if p["completed"] % 100 == 0 or p["completed"] == p["total"] else None,
-            calibration=preset.get("calibration"))
+        from rich.progress import Progress
+        with Progress() as progress:
+            task = progress.add_task("Collecting synthetic batches", total=None)
+            result = generate(terrain / "sim" / safe_name(args.run), args.terrain, preset.get("params", preset),
+                DataConfig(**cfg.get("data", {})), CommandConfig(**cfg.get("commands", {})),
+                runs=args.runs if args.runs is not None else cfg.get("runs", cfg.get("episodes", 10)),
+                batch_size=args.batch_size if args.batch_size is not None else cfg.get("batch_size", 32),
+                device=args.device or cfg.get("device", "cpu"), fractions=cfg.get("fractions", [0.8, 0.1, 0.1]),
+                progress=lambda p: progress.update(task, completed=p["completed"], total=p["total"], description=p["current"]),
+                calibration=preset.get("calibration"), process_windows=False)
+        _print(result)
+    elif args.command == "build-dataset":
+        from optcar.dataset import DataConfig
+        from optcar.datagen.build_dataset import build_dataset
+        from rich.progress import Progress
+        cfg = read_config(args.config)
+        with Progress() as progress:
+            task = progress.add_task("Building dataset", total=None)
+            def update(value):
+                progress.update(task, total=value["total"], completed=value["completed"],
+                                description=f"{value['current']} · {value['new_windows']:,} new windows")
+            result = build_dataset(cfg["output"], cfg["sources"], DataConfig(**cfg.get("data", {})),
+                                   cfg.get("seed", 42), cfg.get("fractions", [.8, .1, .1]), update)
         _print(result)
     elif args.command == "convert":
         from optcar.dataset import DataConfig

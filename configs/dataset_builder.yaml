@@ -1,0 +1,21 @@
+# Edit source paths, terrain labels and output before running.
+output: datasets/built/default
+data:
+  history_steps: 250
+  future_steps: 50  # Transitions; WheeledLab future_horizon = 51.
+  dt: 0.02
+  stride: 10
+  shard_windows: 1024
+seed: 42
+fractions: [0.8, 0.1, 0.1]
+sources:
+  - path: /path/to/real/raw/bins
+    terrain: road
+    source: real
+    split: auto
+  - path: datasets/syn_data/terrains/road/sim/raw_v1
+    terrain: road
+    source: sim
+    split: auto  # Preserve saved synthetic episode splits.
+# Optional source fields: selected_paths, vehicle_id, dt, columns, num_envs.
+# Layout/timestep overrides are for standalone bins; no resampling is performed.

@@ -6,7 +6,7 @@ window.OptCarBinExplorer = {
     let path = '';
     for (const folder of parts) { path += folder + '/'; opened.add(path); }
   },
-  render({tree, entries, filter = '', opened, selected, onSelect, formatDuration}) {
+  render({tree, entries, filter = '', opened, selected, onSelect, formatDuration, scrollToSelection = true}) {
     tree.replaceChildren();
     filter = filter.trim().toLowerCase();
     const visible = entries.filter(entry => entry.relative_path.toLowerCase().includes(filter));
@@ -37,16 +37,16 @@ window.OptCarBinExplorer = {
         const button = document.createElement('button');
         button.className = 'bin-file'; button.dataset.path = entry.path;
         button.disabled = Boolean(entry.error); button.title = entry.error || entry.path;
-        button.setAttribute('aria-pressed', String(selected === entry.path));
+        button.setAttribute('aria-pressed', String(selected instanceof Set ? selected.has(entry.path) : selected === entry.path));
         const name = document.createElement('span'); name.textContent = entry.name;
         const meta = document.createElement('small');
-        meta.textContent = entry.error ? 'Cannot read bin' : `${formatDuration(entry.duration_s)} · ${entry.samples.toLocaleString()} samples`;
+        meta.textContent = entry.error ? 'Cannot read bin' : `${formatDuration(entry.duration_s)} · ${entry.samples.toLocaleString()} samples${entry.split ? ' · '+entry.split : ''}${entry.num_envs>1?' · '+entry.num_envs+' trajectories':''}`;
         button.append(name, meta); button.onclick = () => onSelect(entry.path); parent.append(button);
       }
     }
     append(root, tree);
     if (!visible.length) tree.textContent = 'No raw bins match this folder or filter.';
-    tree.querySelector('.bin-file[aria-pressed=true]')?.scrollIntoView({block: 'nearest'});
+    if (scrollToSelection) tree.querySelector('.bin-file[aria-pressed=true]')?.scrollIntoView({block: 'nearest'});
     return visible.length;
   },
 };

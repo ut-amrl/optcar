@@ -3,23 +3,70 @@ const $ = id => document.getElementById(id);
 const number = id => {const value = Number($(id).value); if (!Number.isFinite(value)) throw new Error(`Invalid ${id}`); return value;};
 const state = {tab:'raw', session:null, segment:null, prediction:null, calibration:null, params:{}, defaults:null, playing:false, zoom:1, pan:[0,0]};
 const names = {len_f:'Front axle distance (m)',len_r:'Rear axle distance (m)',mass:'Mass (kg)',inertia:'Yaw inertia (kg m²)',max_steering_angle:'Steering limit (rad)',C_tire_f:'Front tire stiffness',C_tire_r:'Rear tire stiffness',C_throttle_a:'Drive coefficient',C_rollf:'Rolling resistance',C_drag:'Drag coefficient',wheel_time_constant:'Wheel response (s)',min_wheel_velocity:'Min wheel speed (m/s)',max_wheel_velocity:'Max wheel speed (m/s)'};
-function status(text, error=false){for(const id of ['status','raw-status','bin-status']){$(id).textContent=text;$(id).classList.toggle('error',error);}}
+function status(text, error=false){if(state.tab==='builder'){builderStatus(text,error);return;}if(state.tab==='generate'){generationStatus(text,error);return;}for(const id of ['status','raw-status','bin-status']){$(id).textContent=text;$(id).classList.toggle('error',error);}}
 async function api(path, body){const response=await fetch(path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const result=await response.json();if(!response.ok)throw new Error(result.error||response.statusText);return result;}
 function bind(id, action){$(id).addEventListener('click',async()=>{const button=$(id);button.disabled=true;try{await action();}catch(error){status(error.message,true);}finally{button.disabled=id==='raw-convert'?rawState.active||!rawState.selected.size:false;}});}
+async function refreshDevices(initial=false){
+  try{
+    const result=await api('/api/devices');
+    for(const id of ['device','predict-device']){
+      const select=$(id),previous=select.value;select.replaceChildren();
+      for(const device of result.devices){
+        const option=document.createElement('option');option.value=device.id;
+        option.textContent=device.id==='cpu'?'CPU':`${device.id} · ${device.name} · ${device.memory_gib} GiB`;
+        select.append(option);
+      }
+      select.value=initial?result.default:result.devices.some(d=>d.id===previous)?previous:result.default;
+    }
+    const count=result.devices.length-1;
+    const showDevice=()=>{
+      const selected=result.devices.find(d=>d.id===$('device').value);
+      $('device-info').textContent=count?`${count} GPU${count===1?'':'s'} detected. ${selected.id==='cpu'?'CPU selected.':selected.name+' · '+selected.memory_gib+' GiB.'} Each run uses the selected device.`:result.cuda_version?'No GPUs available. CPU is available.':'CPU-only Torch detected. Run setup and restart the GUI to enable GPUs.';
+    };
+    $('device').onchange=showDevice;showDevice();
+    $('device-info').classList.toggle('error',!count);
+  }catch(error){$('device-info').textContent=`GPU detection failed: ${error.message}`;$('device-info').classList.add('error');throw error;}
+}
 function payload(){if(!state.session)throw new Error('Load a recording first.');return {session_id:state.session.session_id,segment:Number($('segment').value||0)};}
-function dataConfig(){return {history_steps:number('history-steps'),future_steps:number('future-steps'),dt:number('dt'),stride:number('stride'),shard_windows:1024};}
+function dataConfig(dtId='builder-dt'){return {history_steps:number('history-steps'),future_steps:number('future-steps'),dt:number(dtId),stride:number('stride'),shard_windows:1024};}
 function params(){return Object.fromEntries(Object.keys(state.params).map(key=>[key,number(`param-${key}`)]));}
 function setParams(values){state.params=values;$('params').replaceChildren();for(const [key,value]of Object.entries(values)){const label=document.createElement('label');label.textContent=names[key]||key;const input=document.createElement('input');input.type='number';input.id=`param-${key}`;input.value=value;input.step=key==='inertia'?'0.001':key.includes('len')||key.includes('time')?'0.01':'0.1';label.append(input);$('params').append(label);}}
-function selectTab(tab){state.tab=tab;$('raw-workspace').hidden=tab!=='raw';$('dynamics-workspace').hidden=tab!=='model';$('dbm-workspace').hidden=tab!=='dbm';if(tab==='dbm'&&!$('dbm-tool').getAttribute('src'))$('dbm-tool').src='/dbm/?path='+encodeURIComponent(typeof binState!=='undefined'&&binState.data?binState.data.path:$('bin-root').value)+'&folder='+encodeURIComponent($('bin-root').value);$('bins-workspace').hidden=tab!=='bins';$('tab-bins').classList.toggle('active',tab==='bins');state.playing=false;$('play').textContent='▶';if(typeof stopBinPlayback==='function')stopBinPlayback();if(tab==='bins'&&typeof drawBins==='function')requestAnimationFrame(drawBins);$('tab-raw').classList.toggle('active',tab==='raw');state.prediction=null;$('dbm-controls').hidden=tab!=='dbm';$('dbm-return').hidden=tab!=='dbm';$('model-controls').hidden=tab!=='model';$('tab-dbm').classList.toggle('active',tab==='dbm');$('tab-model').classList.toggle('active',tab==='model');$('view-title').textContent=tab==='dbm'?'Understand the dynamics.':'See what the model learns.';clearMetrics();drawAll();}
+function selectTab(tab){state.tab=tab;$('builder-workspace').hidden=tab!=='builder';$('tab-builder').classList.toggle('active',tab==='builder');$('raw-workspace').hidden=tab!=='raw';$('dynamics-workspace').hidden=tab!=='model';$('generation-workspace').hidden=tab!=='generate';$('dbm-workspace').hidden=tab!=='dbm';if(tab==='dbm'&&!$('dbm-tool').getAttribute('src'))$('dbm-tool').src='/dbm/?path='+encodeURIComponent(typeof binState!=='undefined'&&binState.data?binState.data.path:$('bin-root').value)+'&folder='+encodeURIComponent($('bin-root').value);const binViewer=['bins','syn-bins'].includes(tab);$('bins-workspace').hidden=!binViewer;$('tab-syn-bins').classList.toggle('active',tab==='syn-bins');if(binViewer&&typeof switchBinViewer==='function')switchBinViewer(tab).catch(e=>status(e.message,true));$('tab-bins').classList.toggle('active',tab==='bins');state.playing=false;$('play').textContent='▶';if(typeof stopBinPlayback==='function')stopBinPlayback();if(binViewer&&typeof drawBins==='function')requestAnimationFrame(drawBins);$('tab-raw').classList.toggle('active',tab==='raw');state.prediction=null;$('dbm-controls').hidden=tab!=='dbm';$('dbm-return').hidden=tab!=='dbm';$('model-controls').hidden=tab!=='model';$('tab-dbm').classList.toggle('active',tab==='dbm');$('tab-model').classList.toggle('active',tab==='model');$('tab-generate').classList.toggle('active',tab==='generate');if(tab==='generate')updateGenerationSummary();$('view-title').textContent=tab==='dbm'?'Understand the dynamics.':'See what the model learns.';clearMetrics();drawAll();}
 function clearMetrics(){for(const id of ['metric-position','metric-heading','metric-final'])$(id).textContent='—';}
 function showPrediction(result){state.prediction=result;$('metric-position').textContent=result.metrics.position_rmse_m.toFixed(3);$('metric-heading').textContent=(result.metrics.heading_mae_rad*180/Math.PI).toFixed(2);$('metric-final').textContent=result.metrics.final_position_error_m.toFixed(3);drawAll();status(`Predicted ${result.horizon} steps from sample ${result.current}.`);}
 async function preview(){const request={...payload(),current:number('current'),horizon:number('horizon')};status('Computing trajectory…');if(state.tab==='dbm'){request.params=params();if($('wheel-speed').value!=='')request.wheel_speed=number('wheel-speed');showPrediction(await api('/api/rollout',request));}else{request.checkpoint=$('checkpoint').value;request.device=$('predict-device').value;showPrediction(await api('/api/predict',request));}}
 function setFrame(value){if(!state.segment)return;const current=Math.max(0,Math.min(state.segment.samples-2,Math.round(value)));$('current').value=current;$('frame').value=current;state.prediction=null;clearMetrics();drawAll();}
 async function loadSegment(){state.segment=await api('/api/segment',payload());state.prediction=null;state.zoom=1;state.pan=[0,0];$('empty-view').hidden=true;$('frame').max=state.segment.samples-2;$('current').max=state.segment.samples-2;$('fit-end').value=state.segment.samples-1;$('metric-duration').textContent=((state.segment.samples-1)*state.segment.dt).toFixed(1);setFrame(Math.min(number('current'),state.segment.samples-2));}
-async function refreshDatasets(){const result=await api('/api/datasets');const tree=$('dataset-tree');tree.replaceChildren();if(!result.datasets.length){tree.textContent='No generated collections yet.';return;}const grouped={};for(const dataset of result.datasets)(grouped[dataset.terrain]??=[]).push(dataset);for(const [terrain,datasets]of Object.entries(grouped)){const entry=document.createElement('div');entry.className='terrain-entry';const title=document.createElement('strong');title.textContent=`syn_data / terrains / ${terrain}`;entry.append(title);for(const d of datasets){const row=document.createElement('div');row.className='dataset-row';const label=document.createElement('span');label.textContent=`${d.source} / ${d.path.split('/').pop()}`;const counts=document.createElement('small');counts.textContent=`${d.windows.train.toLocaleString()} train · ${d.windows.val.toLocaleString()} val · ${d.windows.test.toLocaleString()} test`;row.append(label,counts);entry.append(row);}tree.append(entry);}}
-async function trackJob(result,title,onComplete){const row=document.createElement('div');row.className='job';const info=document.createElement('div');const heading=document.createElement('strong');heading.textContent=title;const detail=document.createElement('pre');info.append(heading,detail);const cancel=document.createElement('button');cancel.className='secondary';cancel.textContent='Cancel';cancel.onclick=()=>api(`/api/jobs/${result.job_id}/cancel`,{}).catch(e=>status(e.message,true));row.append(info,cancel);$('jobs').prepend(row);const poll=async()=>{try{const job=await api(`/api/jobs/${result.job_id}`);detail.textContent=`${job.status}  ${JSON.stringify(job.progress)}`;if(['queued','running'].includes(job.status)){setTimeout(poll,1000);return;}cancel.remove();if(job.status==='failed'){detail.textContent=job.error;status(job.error,true);}else{detail.textContent=JSON.stringify(job.result,null,2);if(job.status==='complete'&&onComplete)await onComplete(job.result);await refreshDatasets();}}catch(error){detail.textContent=error.message;cancel.remove();status(error.message,true);}};poll();}
+async function refreshDatasets(){const result=await api('/api/datasets');const tree=$('dataset-tree');tree.replaceChildren();if(!result.datasets.length){tree.textContent='No generated collections yet.';return;}const grouped={};for(const dataset of result.datasets)(grouped[dataset.terrain]??=[]).push(dataset);for(const [terrain,datasets]of Object.entries(grouped)){const entry=document.createElement('div');entry.className='terrain-entry';const title=document.createElement('strong');title.textContent=`syn_data / terrains / ${terrain}`;entry.append(title);for(const d of datasets){const row=document.createElement('div');row.className='dataset-row';const label=document.createElement('span');label.textContent=`${d.source} / ${d.path.split('/').pop()}`;const counts=document.createElement('small');counts.textContent=`${d.files.toLocaleString()} files · ${d.episodes.toLocaleString()} trajectories · ${d.stage==='raw'?'raw bins':Object.values(d.windows).reduce((a,b)=>a+b,0).toLocaleString()+' windows'}`;const use=document.createElement('button');use.className='secondary';use.textContent='Use in builder';use.onclick=()=>{addDatasetSource(state.defaults.dataset_root+'/'+d.path,d.terrain,d.source);selectTab('builder');};row.append(label,counts);if(d.source==='sim'){const view=document.createElement('button');view.className='secondary';view.textContent='Visualize';view.onclick=()=>openBinFolder(state.defaults.dataset_root+'/'+d.path,'syn-bins').catch(e=>status(e.message,true));row.append(view);}row.append(use);entry.append(row);}tree.append(entry);}}
+async function trackJob(result,title,onComplete,target='jobs',onFinished){
+  const row=document.createElement('div');row.className='job';
+  const info=document.createElement('div'),heading=document.createElement('strong'),detail=document.createElement('pre'),bar=document.createElement('progress');
+  heading.textContent=title;bar.max=1;info.append(heading,detail,bar);
+  const cancel=document.createElement('button');cancel.className='secondary';cancel.textContent='Cancel';
+  const report=(text,error=false)=>target==='generation-jobs'?generationStatus(text,error):target==='builder-jobs'?builderStatus(text,error):status(text,error);
+  cancel.onclick=()=>api(`/api/jobs/${result.job_id}/cancel`,{}).then(()=>{cancel.disabled=true;cancel.textContent='Cancelling…';}).catch(e=>report(e.message,true));
+  row.append(info,cancel);const container=$(target);if(!container.querySelector('.job'))container.replaceChildren();container.prepend(row);
+  const poll=async()=>{
+    try{
+      const job=await api(`/api/jobs/${result.job_id}`),p=job.progress;
+      if(p.total){bar.value=p.completed/p.total;detail.textContent=`${job.status} · ${p.completed.toLocaleString()} / ${p.total.toLocaleString()}${p.new_windows===undefined?'':' · '+p.new_windows.toLocaleString()+' new windows'}${p.current?'\n'+p.current:''}`;}
+      else{bar.removeAttribute('value');detail.textContent=`${job.status} · ${p.evaluations||0} evaluations`;}
+      if(['queued','running'].includes(job.status)){setTimeout(poll,1000);return;}
+      cancel.remove();bar.value=job.status==='complete'?1:bar.value;
+      if(job.status==='failed'){detail.textContent=job.error;report(job.error,true);}
+      else{
+        const done=job.result;detail.textContent=`${job.status}${done.total?' · '+done.completed+' / '+done.total:''}${done.new_windows===undefined?'':' · '+done.new_windows.toLocaleString()+' new windows'}${done.dataset?'\n'+done.dataset:''}${done.skipped?.length?'\n'+done.skipped.join('\n'):''}`;
+        if(target==='jobs')detail.textContent=JSON.stringify(done,null,2);
+        if(job.status==='complete'&&onComplete)await onComplete(done);
+        else report(`Job ${job.status}. Completed files are retained.`);
+        await refreshDatasets();
+      }
+    }catch(error){detail.textContent=error.message;cancel.remove();report(error.message,true);}
+    if(onFinished)onFinished();
+  };poll();
+}
 
-bind('tab-raw',()=>selectTab('raw'));bind('tab-dbm',()=>selectTab('dbm'));bind('tab-model',()=>selectTab('model'));
+bind('tab-raw',()=>selectTab('raw'));bind('tab-dbm',()=>selectTab('dbm'));bind('tab-model',()=>selectTab('model'));bind('tab-generate',()=>selectTab('generate'));bind('tab-builder',()=>selectTab('builder'));bind('tab-syn-bins',()=>selectTab('syn-bins'));
 bind('inspect-topics',async()=>{status('Reading recording topics…');const result=await api('/api/topics',{path:$('bag-path').value});$('topics').hidden=false;$('topics').textContent=result.topics.map(t=>`${t.topic} · ${t.type} (${t.count})`).join('\n');$('topic-options').replaceChildren();for(const topic of result.topics){const option=document.createElement('option');option.value=topic.topic;$('topic-options').append(option);}status('Choose pose, twist, and velocity/steering topics, then load the recording.');});
 bind('load-bag',async()=>{status('Loading and aligning recording…');state.playing=false;$('play').textContent='▶';const bag={pose_topic:$('pose-topic').value,twist_topic:$('twist-topic').value,command_topic:$('command-topic').value,twist_frame:$('twist-frame').value,command_type:$('command-type').value,command_shift_s:number('command-shift'),max_gap_s:number('max-gap'),timestamp_source:$('timestamp-source').value};state.session=await api('/api/bag',{path:$('bag-path').value,bag,dt:number('dt'),split:$('split').value});$('segment').replaceChildren();for(const segment of state.session.segments){const option=document.createElement('option');option.value=segment.index;option.textContent=`${segment.index+1} · ${segment.start_s.toFixed(1)}–${segment.end_s.toFixed(1)} s · ${segment.samples} samples`;$('segment').append(option);}$('segment-label').hidden=false;$('bag-state').textContent=`${state.session.segments.length} segment(s) · ${state.session.split}`;await loadSegment();status('Recording loaded. Choose a start sample and preview a trajectory.');});
 $('segment').addEventListener('change',()=>loadSegment().catch(e=>status(e.message,true)));
@@ -27,8 +74,9 @@ bind('load-preset',async()=>{const result=await api(`/api/preset?terrain=${encod
 bind('save-preset',async()=>{const result=await api('/api/preset',{terrain:$('terrain').value,params:params(),calibration:state.calibration,...(state.session?payload():{})});status(`Saved ${result.path}`);});
 bind('run-dbm',preview);bind('predict',preview);bind('preview',preview);
 bind('fit',async()=>{const keys=[...document.querySelectorAll('#fit-keys input:checked')].map(el=>el.value);if(!keys.length)throw new Error('Select at least one parameter to fit.');const result=await api('/api/fit',{...payload(),params:params(),start:number('fit-start'),end:number('fit-end'),keys});trackJob(result,'DBM identification',async fitted=>{setParams(fitted.params);state.calibration=fitted.calibration;status(`Fit ${fitted.success?'converged':'finished without convergence'}: ${fitted.initial_rmse.toFixed(4)} → ${fitted.fitted_rmse.toFixed(4)}. Preview a separate validation recording, then save the terrain preset.`);});});
-bind('export',async()=>{const result=await api('/api/export',{...payload(),terrain:$('terrain').value,run:$('run-name').value,data:dataConfig()});trackJob(result,'Export real recording',async()=>status('Recording exported.'));});
-bind('generate',async()=>{const commands={...state.defaults.commands,duration:number('duration'),action_bounds:[[number('velocity-min'),number('velocity-max')],[number('steering-min'),number('steering-max')]],noise_std:[number('velocity-noise'),number('steering-noise')],seed:number('seed'),parameter_randomization:number('variation')};const result=await api('/api/generate',{terrain:$('terrain').value,run:$('run-name').value,data:dataConfig(),commands,episodes:number('episodes'),batch_size:number('batch-size'),device:$('device').value});trackJob(result,'Synthetic data collection',async()=>status('Synthetic collection complete.'));});
+bind('export',async()=>{const result=await api('/api/export',{...payload(),terrain:$('terrain').value,run:$('export-run').value,data:dataConfig('dt')});trackJob(result,'Export real recording',async()=>status('Recording exported.'));});
+bind('refresh-devices',()=>refreshDevices());
+bind('generate',async()=>{const device=$('device').value;const commands={...state.defaults.commands,duration:number('duration'),action_bounds:[[number('velocity-min'),number('velocity-max')],[number('steering-min'),number('steering-max')]],noise_std:[number('velocity-noise'),number('steering-noise')],seed:number('seed'),parameter_randomization:0,parameter_ranges:readGenerationRanges(),bezier_full_range:$('generation-bezier-stretch').checked,resample_params_each_run:$('generation-resample').checked};const terrain=$('generation-terrain').value;const result=await api('/api/generate',{terrain,run:$('run-name').value,data:{dt:number('generation-dt')},raw_only:true,commands,runs:number('episodes'),batch_size:number('batch-size'),device});trackJob(result,`Synthetic raw bins · ${device}`,async completed=>{generationStatus(`Saved ${completed.completed} batch bins (${completed.trajectories} trajectories) to ${completed.dataset}`);state.generated={path:completed.dataset,terrain};$('generation-next').hidden=false;},'generation-jobs');generationStatus(`Generation started on ${device}.`);});
 bind('inspect-checkpoint',async()=>{status('Loading checkpoint…');const result=await api('/api/checkpoint',{path:$('checkpoint').value});$('checkpoint-info').textContent=`${result.model.architecture} · ${result.stage}\nHistory ${result.data.history_steps} · horizon ${result.data.future_steps}\nTimestep ${result.data.dt} s · epoch ${result.epoch+1}`;$('horizon').value=result.data.future_steps;$('current').value=Math.max(number('current'),result.data.history_steps-1);if(state.segment)setFrame(number('current'));status(`Checkpoint loaded.${state.session&&Math.abs(state.session.dt-result.data.dt)>1e-9?' Reload recording at '+result.data.dt+' s timestep.':''}`);});
 bind('refresh-data',refreshDatasets);bind('reset-view',()=>{state.zoom=1;state.pan=[0,0];drawAll();});
 $('frame').addEventListener('input',()=>setFrame(number('frame')));$('current').addEventListener('change',()=>setFrame(number('current')));
@@ -42,13 +90,80 @@ function drawTrajectory(){const {ctx,w,h}=canvas('trajectory');const recording=s
 function drawSignal(id, series){const {ctx,w,h}=canvas(id);if(!state.segment)return;const {times}=state.segment;const left=42,right=w-14,top=18,bottom=h-25;let lo=0,hi=0;for(const values of series)for(const value of values){lo=Math.min(lo,value);hi=Math.max(hi,value);}const span=Math.max(0.1,hi-lo);lo-=span*.1;hi+=span*.1;const map=(i,value)=>[left+(times[i]-times[0])/Math.max(.01,times[times.length-1]-times[0])*(right-left),bottom-(value-lo)/(hi-lo)*(bottom-top)];ctx.font='9px monospace';ctx.fillStyle='#748995';for(let i=0;i<=3;i++){const value=lo+(hi-lo)*i/3;const y=map(0,value)[1];ctx.strokeStyle='#25333c';ctx.beginPath();ctx.moveTo(left,y);ctx.lineTo(right,y);ctx.stroke();ctx.fillText(value.toFixed(1),5,y+3);}series.forEach((values,i)=>line(ctx,values.map((value,j)=>map(j,value)),i===0?'#6bd1d6':'#eab58a',1.4));const cursor=left+(number('current')*state.segment.dt)/(state.segment.dt*(state.segment.samples-1))*(right-left);ctx.strokeStyle='#c2ed80';ctx.setLineDash([3,3]);ctx.beginPath();ctx.moveTo(cursor,top);ctx.lineTo(cursor,bottom);ctx.stroke();ctx.setLineDash([]);ctx.fillText(`${times[0].toFixed(1)}s`,left,h-7);ctx.fillText(`${times[times.length-1].toFixed(1)}s`,right-40,h-7);}
 function drawAll(){drawTrajectory();if(state.segment){drawSignal('velocity',[state.segment.states.map((s,i)=>s[7]*Math.cos(state.segment.yaw[i])+s[8]*Math.sin(state.segment.yaw[i])),state.segment.commands.map(a=>a[0])]);drawSignal('steering',[state.segment.commands.map(a=>a[1]),state.segment.states.map(s=>s[12])]);}else{canvas('velocity');canvas('steering');}}
 const plot=$('trajectory');plot.addEventListener('wheel',event=>{event.preventDefault();state.zoom=Math.max(.1,Math.min(30,state.zoom*Math.exp(-event.deltaY*.001)));drawTrajectory();},{passive:false});let drag=null;plot.addEventListener('pointerdown',event=>{drag=[event.clientX,event.clientY,...state.pan];plot.setPointerCapture(event.pointerId);});plot.addEventListener('pointermove',event=>{if(drag){state.pan=[drag[2]+event.clientX-drag[0],drag[3]+event.clientY-drag[1]];drawTrajectory();}});plot.addEventListener('pointerup',()=>drag=null);plot.addEventListener('pointercancel',()=>drag=null);new ResizeObserver(drawAll).observe($('trajectory'));
-async function init(){state.defaults=await api('/api/defaults');setParams(state.defaults.params);$('raw-root').value=state.defaults.raw_root||'';for(const key of ['len_f','len_r','mass','inertia',...state.defaults.fit_keys]){const label=document.createElement('label');const check=document.createElement('input');check.type='checkbox';check.value=key;check.checked=state.defaults.fit_keys.includes(key);label.append(check,document.createTextNode(key));$('fit-keys').append(label);}await refreshDatasets();drawAll();}
+async function init(){state.defaults=await api('/api/defaults');setParams(state.defaults.params);$('generation-resample').checked=Boolean(state.defaults.commands.resample_params_each_run);$('generation-bezier-stretch').checked=state.defaults.commands.bezier_full_range;try{state.generationPreset=(await api('/api/preset?terrain='+encodeURIComponent($('generation-terrain').value.trim()))).params;}catch{state.generationPreset=null;}renderGenerationRanges(state.generationPreset||state.defaults.params,state.defaults.commands.parameter_ranges);$('raw-root').value=state.defaults.raw_root||'';$('builder-output').value=state.defaults.dataset_root+'/built/default';updateGenerationSummary();for(const key of ['len_f','len_r','mass','inertia',...state.defaults.fit_keys]){const label=document.createElement('label');const check=document.createElement('input');check.type='checkbox';check.value=key;check.checked=state.defaults.fit_keys.includes(key);label.append(check,document.createTextNode(key));$('fit-keys').append(label);}await refreshDatasets();await refreshDevices(true);drawAll();}
 init().catch(error=>status(error.message,true));
 
 bind('dbm-manual',()=>{state.playing=false;$('play').textContent='▶';$('dbm-workspace').hidden=false;$('dynamics-workspace').hidden=true;});
 bind('dbm-advanced',()=>{$('dbm-workspace').hidden=true;$('dynamics-workspace').hidden=false;drawAll();});
 bind('dbm-return',()=>{state.playing=false;$('play').textContent='▶';$('dbm-workspace').hidden=false;$('dynamics-workspace').hidden=true;});
-function sizeDbmWorkspace(){const height=Math.max(200,window.innerHeight-document.querySelector('header').getBoundingClientRect().height);$('dbm-workspace').style.height=`${height}px`;}
+function sizeDbmWorkspace(){const height=Math.max(200,window.innerHeight-document.querySelector('header').getBoundingClientRect().height);$('dbm-workspace').style.height=`${height}px`;$('generation-workspace').style.height=`${height}px`;$('builder-workspace').style.height=`${height}px`;}
 new ResizeObserver(sizeDbmWorkspace).observe(document.querySelector('header'));
 window.addEventListener('resize',sizeDbmWorkspace);
 sizeDbmWorkspace();
+
+function generationStatus(text,error=false){$('generation-status').textContent=text;$('generation-status').classList.toggle('error',error);}
+function updateGenerationSummary(){
+  $('generation-episodes').textContent=Number($('episodes').value).toLocaleString()+' / '+(Number($('episodes').value)*Number($('batch-size').value)).toLocaleString();
+  $('generation-duration').textContent=`${$('duration').value}s`;
+  const dt=Number($('generation-dt').value);
+  $('generation-steps').textContent=Math.round(Number($('duration').value)/dt).toLocaleString();
+  $('generation-timestep').textContent=`${dt}s`;
+  const terrain=$('generation-terrain').value.trim(),run=$('run-name').value.trim();
+  $('generation-output').textContent=`Output: ${state.defaults?.dataset_root||'datasets'}/syn_data/terrains/${terrain}/sim/${run}/`;
+}
+for(const id of ['episodes','batch-size','duration','generation-dt','generation-terrain','run-name'])$(id).addEventListener('input',updateGenerationSummary);
+$('generation-terrain').addEventListener('input',()=>{state.generationPreset=null;$('generation-preset-details').hidden=true;$('generation-preset-status').textContent='Check the saved preset for this terrain.';});
+bind('generation-load-preset',async()=>{
+  $('generation-preset-details').hidden=true;
+  const terrain=$('generation-terrain').value.trim();
+  try{
+    const result=await api(`/api/preset?terrain=${encodeURIComponent(terrain)}`);
+    $('generation-preset-values').replaceChildren();
+    for(const [key,value]of Object.entries(result.params)){const term=document.createElement('dt');term.textContent=names[key]||key;const definition=document.createElement('dd');definition.textContent=value;$('generation-preset-values').append(term,definition);}
+    state.generationPreset=result.params;renderGenerationRanges(result.params,readGenerationRanges());
+    $('generation-preset-details').hidden=false;$('generation-preset-status').textContent=`Saved preset for ${terrain}. Uses the saved DBM parameters.`;
+  }catch(error){$('generation-preset-status').textContent=`Could not load the ${terrain} preset. Save it in DBM calibration first.`;throw error;}
+});
+
+bind('generation-view',()=>state.generated&&openBinFolder(state.generated.path,'syn-bins'));
+bind('generation-build',()=>{if(state.generated){addDatasetSource(state.generated.path,state.generated.terrain,'sim');selectTab('builder');}});
+
+
+// The backend catalog and WheeledLab sampler define these parameters once.
+const generationRangeLabels={start_pos_x:'Starting x (m)',start_pos_y:'Starting y (m)',start_pos_z:'Starting z (m)',start_rot_yaw:'Starting heading (rad)',max_velocity:'Velocity normalization limit (m/s)',max_steering:'Steering limit (rad)',max_lateral_acceleration_mps2:'Lateral acceleration limit (m/s²)',throttle_multiplier:'Throttle gain',throttle_bias:'Throttle bias (m/s)',steer_pos_multiplier:'Positive steering gain',steer_pos_bias:'Positive steering bias (rad)',steer_neg_multiplier:'Negative steering gain',steer_neg_bias:'Negative steering bias (rad)',throttle_deadband_min:'Throttle deadband lower (m/s)',throttle_deadband_max:'Throttle deadband upper (m/s)',steer_deadband_min:'Steering deadband lower (rad)',steer_deadband_max:'Steering deadband upper (rad)',velocity_bias:'Per-trajectory velocity bias (m/s)',steering_bias:'Per-trajectory steering bias (rad)'};
+let generationRangeRows=[];
+function renderGenerationRanges(params={},ranges={}){
+  $('generation-range-grid').replaceChildren();generationRangeRows=[];
+  for(const item of [...state.defaults.generation_parameters].sort((a,b)=>['physical','actuator','pose'].indexOf(a.group)-['physical','actuator','pose'].indexOf(b.group))){
+    const key=item.key,base=params[key==='max_steering'?'max_steering_angle':key]??item.default;
+    const spec=ranges[key],mode=spec?.[2]||'uniform';
+    const row=document.createElement('div');row.className='generation-range-card';row.dataset.group=item.group;
+    const label=document.createElement('label');label.className='generation-range-name';
+    const enabled=document.createElement('input');enabled.type='checkbox';enabled.checked=Boolean(spec);enabled.setAttribute('aria-label',`Randomize ${key}`);
+    const title=document.createElement('span');title.textContent=names[key]||generationRangeLabels[key]||key;title.title=`${title.textContent} (${key})`;
+    const variable=document.createElement('code');variable.className='generation-range-variable';variable.textContent=key;label.append(enabled,title);
+    const distribution=document.createElement('select');distribution.setAttribute('aria-label',`Distribution ${key}`);
+    for(const method of key==='velocity_bias'||key==='steering_bias'?['uniform']:['uniform','normal']){const option=new Option(method==='uniform'?'Uniform':'Normal',method);distribution.append(option);}distribution.value=mode;
+    const inputs=[0,1].map(index=>{const input=document.createElement('input');input.type='number';input.step='any';input.value=spec?.[index]??base??'';return input;});
+    const wrappers=inputs.map(input=>{const wrapper=document.createElement('label');const caption=document.createElement('span');wrapper.append(caption,input);return {wrapper,caption};});
+    const refresh=()=>{distribution.disabled=!enabled.checked;inputs.forEach(input=>input.disabled=!enabled.checked);const labels=distribution.value==='normal'?['Mean','Std']:['Min','Max'];wrappers.forEach((part,index)=>{part.caption.textContent=labels[index];inputs[index].setAttribute('aria-label',`${labels[index]} ${key}`);});row.classList.toggle('enabled',enabled.checked);updateGenerationRangeStatus();};
+    const fields=document.createElement('div');fields.className='generation-range-fields';const modeLabel=document.createElement('label');const modeCaption=document.createElement('span');modeCaption.textContent='Distribution';modeLabel.append(modeCaption,distribution);fields.append(modeLabel,...wrappers.map(part=>part.wrapper));row.append(label,variable,fields);$('generation-range-grid').append(row);
+    generationRangeRows.push({key,enabled,distribution,inputs,refresh});
+    enabled.addEventListener('change',refresh);distribution.addEventListener('change',()=>{inputs[0].value=base??'';inputs[1].value=distribution.value==='normal'?0:base??'';refresh();});inputs.forEach(input=>input.addEventListener('input',updateGenerationRangeStatus));refresh();
+  }
+}
+function readGenerationRanges(){
+  const ranges={};
+  for(const {key,enabled,distribution,inputs}of generationRangeRows){
+    if(!enabled.checked)continue;
+    if(inputs.some(input=>input.value===''||input.validity.badInput||!Number.isFinite(Number(input.value))))throw new Error(`${key}: enter two finite range values.`);
+    const values=inputs.map(input=>Number(input.value));
+    if(distribution.value==='uniform'&&values[0]>values[1])throw new Error(`${key}: maximum must be at least the minimum.`);
+    if(distribution.value==='normal'&&values[1]<0)throw new Error(`${key}: standard deviation must be nonnegative.`);
+    ranges[key]=[...values,distribution.value];
+  }
+  return ranges;
+}
+function updateGenerationRangeStatus(){const count=generationRangeRows.filter(row=>row.enabled.checked).length;$('generation-ranges-status').textContent=count?`${count} parameter overrides selected. Equal min/max sets a fixed value.`:'All parameters use the saved preset.';}
+bind('generation-ranges-all',()=>{for(const row of generationRangeRows){row.enabled.checked=true;row.refresh();}});
+bind('generation-ranges-clear',()=>{for(const row of generationRangeRows){row.enabled.checked=false;row.refresh();}});

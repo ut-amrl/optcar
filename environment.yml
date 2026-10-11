@@ -4,5 +4,5 @@ channels:
 dependencies:
   - python=3.11
   - pip
-# Install CPU Torch first, then requirements.txt and the editable package.
-# scripts/setup_env.sh performs these steps without downloading CUDA packages.
+# scripts/setup_env.sh installs the GPU-enabled requirements.txt and editable
+# package, then detects and verifies every NVIDIA GPU visible to Torch.

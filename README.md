@@ -19,14 +19,29 @@ From this OptCar folder (all converter code and scripts live here):
 ```bash
 bash scripts/setup_env.sh
 conda activate optcar
-optcar gui --bag-root /home/rwik/research/jumpracing/rosbags/corl26
+python3 web_gui.py --bag-root /home/rwik/research/jumpracing/rosbags/corl26
 ```
 
-Open **http://127.0.0.1:5050**. `setup_env.sh` creates the `optcar` Conda environment with Python 3.11, installs CPU Torch for the existing workbench, then installs `requirements.txt` and OptCar. CUDA/training setup can follow later. `pyproject.toml` already describes package dependencies; `requirements.txt` and `environment.yml` make this setup explicit.
+Open **http://127.0.0.1:5050**. `setup_env.sh` creates the `optcar` Conda environment with Python 3.11, installs the single `requirements.txt` and OptCar, then detects and verifies a small operation on **every visible NVIDIA GPU**. The requirements pin the official **Torch 2.11.0 / CUDA 12.8** GPU wheel, replacing an existing CPU-only build. The same GPU-enabled installation also supports CPU execution; there are no separate CPU/GPU requirements files.
+
+To repair an existing CPU-only environment, rerun `bash scripts/setup_env.sh`. For manual installation inside the `optcar` environment:
+
+```bash
+python3 -m pip install -r requirements.txt -e '.[bags]'
+```
+
+CUDA builds require a compatible NVIDIA driver. Restart any running GUI after updating Torch or changing GPU visibility. See the [official PyTorch build options](https://pytorch.org/get-started/previous-versions/).
+
+In **Synthetic raw bins**, **Collection device** lists each detected GPU as `cuda:0`, `cuda:1`, etc., with its name and total memory. The first available GPU is selected initially; CPU remains selectable. **Refresh GPUs** updates the list, preserving your choice when available. Each run uses one selected device; the existing job queue allows two concurrent runs, so separate runs can use different GPUs. This does not split a single collection across GPUs. CLI generation accepts the same indexed devices via `--device cuda:1`. Device indices follow Torch's visible ordering, including `CUDA_VISIBLE_DEVICES`; restart the server after changing that variable. ROS2 bag conversion and dataset assembly retain their existing CPU processing.
+
+`web_gui.py` calls the existing GUI entry point and accepts the same `--bag-root`, `--dataset-root`, `--host`, and `--port` options. Run `python3 web_gui.py --help` to see them. The `optcar gui` command remains available.
 
 - **ROS2 bags → bins:** scan a folder recursively, inspect duration and topics, choose bags, and select an output folder. Conversion runs in the background with overall and current-bag progress, elapsed time, an estimated remaining time, results, and cancellation. Completed bins are retained on cancellation; refreshing the page reconnects to an active job while the server remains running.
 - **Raw bin viewer:** open a dataset folder, nested bin folder, or single `.bin`. Expand the folder browser and click a file. Inspect world XY motion with zoom/pan, play or scrub through every sample, and view position, wxyz orientation, world linear/angular velocity, and commands with exact cursor values. Beside the world trajectory, two plots show commanded velocity versus measured forward body velocity, and the steering command. Use **Action plot time range → Around current** to set seconds before and after the selected sample; both action plots follow playback/scrubbing with the current sample at `0 s`. **Full recording** restores the complete time axis. Expand **Y-axis limits** to set independent velocity and steering minimum/maximum values; leave either limit blank for automatic scaling. Manual limits stay fixed while scrubbing or playing. These controls use the viewer timestep, and narrow windows read their samples directly rather than relying on the sampled overview. Forward velocity uses the auxiliary body twist when present, otherwise a full-quaternion rotation of the main bin’s world velocity. After conversion, **View raw bins** opens this tab with the output folder filled in; the folder remains editable.
-- **DBM calibration:** the manual web estimator copied from WheeledLab. Defaults use its CORL26 AlphaTruck preset (`len_f = len_r = 0.245 m`), shared with the backend and `configs/dbm.yaml`. The left folder explorer shares the raw viewer's expandable tree, filtering, selection, and duration/sample metadata. Click a raw 15/17-column bin, scrub the current sample, set a prediction horizon and command delay, edit all 13 DBM parameters, and use **Set & Rollout** to overlay the predicted future in the current sample’s body frame. **Tune DBM** in the raw viewer opens that exact bin and sample. World-trajectory segment selection and YAML saving/loading, plus circle/figure-eight/Dubins/custom reference trajectories, are preserved. Aggregate comparisons are not exposed in the interface. Terrain presets use OptCar’s existing preset storage. **Bag fitting & dataset tools** opens the separate, existing ROS2-bag workflow: bounded least squares fits selected parameters to measured one-step transitions only after **Fit DBM parameters** is clicked; export and synthetic dataset generation are available there too. **Back to manual bin tuning** returns to the manual tool.
+- **DBM calibration:** the manual web estimator copied from WheeledLab. Defaults use its CORL26 AlphaTruck preset (`len_f = len_r = 0.245 m`), shared with the backend and `configs/dbm.yaml`. The left folder explorer shares the raw viewer's expandable tree, filtering, selection, and duration/sample metadata. Click a raw 15/17-column bin, scrub the current sample, set a prediction horizon and command delay, edit all 13 DBM parameters, and use **Set & Rollout** to overlay the predicted future in the current sample’s body frame. **Tune DBM** in the raw viewer opens that exact bin and sample. World-trajectory segment selection and YAML saving/loading, plus circle/figure-eight/Dubins/custom reference trajectories, are preserved. Aggregate comparisons are not exposed in the interface. Terrain presets use OptCar’s existing preset storage. **Automatic bag fitting** opens the separate, existing ROS2-bag workflow: bounded least squares fits selected parameters to measured one-step transitions only after **Fit DBM parameters** is clicked; dataset creation has its own tabs. **Back to manual bin tuning** returns to the manual tool.
+- **Synthetic raw bins:** choose a saved terrain preset, timestep, run count/duration, batch size, command bounds/noise, seed and selected per-parameter ranges. This follows WheeledLab’s batched controller, analytical DBM environment and data collector: each run saves one float32 `[batch_size, duration/dt, 15]` bin in `data/`, plus WheeledLab metadata. **Visualize synthetic data** opens the output in the synthetic viewer; **Use in dataset builder** adds it as a source. Nothing runs until you click **Generate raw bins**.
+- **Visualize synthetic data:** reuses the raw bin viewer and folder explorer, with a **Batch index (0-based)** selector for WheeledLab packed `[environment, step, feature]` bins. For batch size 32, indices `0` through `31` select the individual trajectories in each bin. Legacy OptCar files contain one trajectory, so they expose index `0`. Packed bins read their environment count from metadata or **Layout settings → Environment count**. Playback, the sample slider, world trajectory, body-forward velocity, steering, time ranges and Y-axis limits use the selected trajectory. Folder, layout and frame selection are retained separately for the raw and synthetic viewer tabs. Generation completion and each saved synthetic collection provide a direct **Visualize** button.
+- **Dataset builder:** add real and synthetic raw bin folders, scan their expandable trees and select files. Set history samples, future transitions, timestep, stride, splits and output folder, then **Review selected bins** and **Build dataset**. Saved synthetic splits are preserved; new real recordings are split as whole sessions. Timestep mismatches are reported, without resampling. Standalone bins support explicit layout/timestep/environment overrides. The output can be loaded by the existing `FKDDataset` and training commands; set your training configuration's `datasets` paths to this output. No training starts from this tab.
 - **Transformer evaluation:** existing checkpoint and trajectory comparison.
 
 The raw-bin reader is copied and adapted from WheeledLab's `dbm_estimator/extractor.py`; plot grouping and multi-environment ordering follow `plot_sim_bins.py`. It reads 15/17-column float32 bins, detects timestep and environment count from metadata, and supports manual layout overrides for standalone files. Dataset config files are read as text without executing Python. Large files use memory mapping and a sampled overview; the current sample is read exactly, including the final row. Signal ranges cover the full recording, and nonfinite values appear as gaps with a warning. This viewer expects raw state/action bins, before training-window processing. The manual DBM tab uses these same raw bins. Its plots and handlers are copied from `wheeledlab_utils/dbm_estimator`, with reference generators copied from `wheeledlab_tasks/mppi`; all adapted code and the locally served Plotly asset are inside OptCar. A horizon of H steps shows the current state plus H future states, clipped at the recording end. Positive command delay uses earlier recorded commands; rollouts report an error when the delay exceeds available command coverage or the parameters produce nonfinite results.
@@ -62,7 +77,7 @@ rosbags/bins/
     last_job.json          # Complete, failed and cancelled results
 ```
 
-Default raw bins are **float32 [T, 15]**: position (3), quaternion wxyz (4), world linear/angular velocity (6), commanded velocity and steering (2). Every row retains its recorded command. The optional 17-column mode adds the unshifted command pair, matching WheeledLab's `include_cmd_vel` layout. This raw stage does **not** generate training windows or assign splits; the existing `optcar convert` command below does that separately.
+Default raw bins are **float32 [T, 15]**: position (3), quaternion wxyz (4), world linear/angular velocity (6), commanded velocity and steering (2). Every row retains its recorded command. The optional 17-column mode adds the unshifted command pair, matching WheeledLab's `include_cmd_vel` layout. This raw stage does **not** generate training windows or assign splits; the Dataset builder does that separately. The existing `optcar convert` command also remains available.
 
 New conversions also read `/super_odometry/twist` and save its six linear/angular velocity channels in `aux/<same relative path>.bin`. This preserves the recorded body twist separately from the main bin’s world twist. `conversion.json` links each companion and records frame IDs, shape, timestep, start time, and missing values. Auxiliary samples use the same bag timestamps and sample-and-hold grid as the main bin, without shifting commands or trimming the main recording. Before/after auxiliary coverage, missing values are stored as NaN and displayed as gaps. Missing auxiliary topics do not block conversion. The viewer only lists main `data/` bins; training inputs remain 15/17 columns. Existing bins work with derived body velocity; select overwrite on the bags you want to reconvert with auxiliary data. The GUI’s **Auxiliary data** setting and CLI `--aux-twist-topic` choose another body twist topic; an empty name disables auxiliary output.
 
@@ -78,6 +93,28 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q tests/test_raw_bags.py test
 
 The flag avoids unrelated ROS pytest plugins when your shell has sourced ROS. Install test dependencies with `pip install -e '.[dev]'`.
 
+## Synthetic raw bins and dataset assembly
+
+Use tab **04 Synthetic raw bins**, followed by **05 Dataset builder**. DBM calibration stays in tab **03**. The builder uses the existing FKD window writer and WheeledLab's copied quaternion continuity and frame transforms; it does not introduce another dynamics model or state format.
+
+Raw states are `[position(3), quaternion wxyz(4), world linear velocity(3), world angular velocity(3)]`, followed by velocity/steering commands. Both 15-column bins and 17-column real bins are supported; the extra two unshifted command columns are diagnostics. Processed windows contain world (13), body (13), delta (13), commands (2) and the existing vehicle/file ID (1): **42 columns**. Vehicle ID defaults to the selected file index, as in WheeledLab, and can be overridden per source.
+
+The current sample is `history_steps - 1`. Body states use that sample's full quaternion and position. Delta position/orientation uses the previous sample's frame; delta velocities are absolute velocities rotated into each sample's own body frame. Quaternion continuity is applied separately to world and relative body orientations per window, without forcing positive w. WheeledLab's `future_horizon` includes the current sample; OptCar's `future_steps` counts transitions, so a future setting of 50 corresponds to WheeledLab `future_horizon=51`. As in WheeledLab, an environment trajectory containing NaNs is skipped; OptCar also rejects infinities and zero quaternions. Commands stay aligned to their recorded sample, including the final row for imported raw bins. Synthetic collection now uses WheeledLab’s post-step state/action logging: each row stores the state after applying that row’s command. It does not prepend the initial state or append a zero command. Legacy collections remain readable and are not rewritten.
+
+The added backend only manages selected sources, manifests, progress, and the separate output. Existing source bins are never modified. Repeating a build with unchanged sources/settings resumes it; changed inputs require a new output folder. Train/validation/test split membership lives in each manifest, rather than splitting overlapping windows randomly.
+
+Terminal equivalents share the same backend:
+
+```bash
+optcar generate --terrain road --run raw_v1 --raw-only
+# Edit configs/dataset_builder.yaml with your source folders and window settings:
+optcar build-dataset --config configs/dataset_builder.yaml
+```
+
+Generation saves raw bins; processing happens in the Dataset builder. `--raw-only` remains an accepted compatibility flag. Both generation and builder terminal progress update in place. Use a new run name when switching from legacy collections: the output guard rejects mixing layouts or collection settings.
+
+Optional parity tests read the local WheeledLab source without importing ROS/Isaac/CuPy. Set `WHEELEDLAB_SOURCE` to its `source` directory when it is not next to OptCar. They compare processed states/actions and DBM RK4/rollouts against the reference routines. Tests create temporary fixtures only.
+
 ## Prepare data from the terminal
 
 Set your bag paths and edit the topics in `configs/rosbag.yaml`:
@@ -92,10 +129,10 @@ optcar convert "$TRAIN_BAG" --terrain road --split train
 optcar convert "$VAL_BAG" --terrain road --split val
 optcar convert "$TEST_BAG" --terrain road --split test
 optcar fit "$TRAIN_BAG" --terrain road
-optcar generate --terrain road --episodes 10000 --device cuda
+optcar generate --terrain road --run raw_v2 --runs 10 --batch-size 32 --device cuda:0
 ```
 
-Repeat for other terrains. Use separate bags for each split. `configs/datagen.yaml` controls Bézier velocity, random-walk steering, noise, and episode length. Replace `cuda` with `cpu` if needed.
+Repeat for other terrains. Use separate bags for each split. `configs/datagen.yaml` controls Bézier velocity, random-walk steering, noise, run duration and batch size. Replace `cuda` with `cpu` if needed.
 
 ## Train
 
@@ -135,3 +172,11 @@ Use `optcar <command> --help` for options, including training resume and predict
 - `optcar/dataset.py`: binary format, writer, loader, and balanced sampling.
 - `optcar/train.py`, `optcar/evaluate.py`: training and evaluation.
 - `optcar/gui/`, `optcar/utils/`: web interface and shared helpers.
+
+Synthetic collection reuses copies of WheeledLab’s `ParametricOpenLoopController`, `ParamRandomizer`, parameter dataclasses, `State_struct_torch`, and `DataCollector`. The analytical environment reset/step methods and Torch RK4 equations follow the reference. DBM parameters come from your saved terrain preset; zero initial velocity, grid spacing, action normalization and the default 10 m/s² lateral acceleration cap match its analytical simulator. Parameter values are shared across each batch; the default keeps them fixed across runs, with `commands.resample_params_each_run` available as in WheeledLab. `commands.parameter_ranges` accepts the reference’s uniform/normal numeric ranges for supported physical/control parameters. A run with 32 trajectories, 10 seconds and dt=0.02 saves 32 × 500 × 15 × 4 = 960,000 bytes (937.5 KiB). Ten runs produce ten files and 320 trajectories.
+
+The synthetic tab’s **Domain randomization** editor enables individual DBM physical parameters, control limits, starting position/heading, actuator gains and deadband endpoints. Unchecked parameters retain the saved terrain values. Uniform inputs map to `[min, max, uniform]`; Normal inputs map to `[mean, std, normal]`, using the copied WheeledLab `ParamRandomizer`. Check **Resample vehicle parameters each run** to sample a new shared parameter set per run. The original YAML `commands.parameter_ranges` remains available for terminal collection.
+
+The synthetic setup is a compact, full-width grid: collection settings, command bounds/noise and GPU selection sit above individual parameter cards. Configure ranges directly in OptCar; no external repository or YAML path is needed. `velocity_bias` and `steering_bias` use separate per-environment uniform sampling before action normalization; applied biases and resolved vehicle parameters are saved for each run. Model-level `throttle_bias` and `steer_pos_bias`/`steer_neg_bias` remain distinct and use the copied deadband/gain/bias processing.
+
+The default **Stretch Bézier curves to both command bounds** retains WheeledLab’s min/max normalization: every nonconstant mean curve touches both bounds. Uncheck it (`commands.bezier_full_range: false`) to retain its original randomly sampled Bézier control points, skipping only that normalization for Bézier curves. The same noise, clipping, seeding and other curve methods remain in use. Noise or command biases can still produce samples near a limit. Changing either ranges or command generation settings requires a new run name.
