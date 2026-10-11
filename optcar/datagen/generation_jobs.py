@@ -139,13 +139,13 @@ class GenerationJobs:
             raise ValueError(record["error"]) from exc
 
     def start_build(self, output, sources, data=None, seed=42, fractions=(.8, .1, .1), device=None, workers=16):
-        from optcar.dataset import DataConfig, session_split
-        from optcar.datagen.build_dataset import build_output
+        from optcar.dataset import session_split
+        from optcar.datagen.build_dataset import build_output, builder_data_config
         from optcar.utils.devices import available_devices, resolve_device
         tmux = shutil.which("tmux")
         if not tmux:
             raise ValueError("tmux is required for dataset building. Install tmux, then restart the GUI.")
-        data = data if isinstance(data, DataConfig) else DataConfig(**(data or {}))
+        data = builder_data_config(data)
         if type(workers) is not int or workers < 1:
             raise ValueError("File loading workers must be a positive integer")
         device = resolve_device(device if device is not None else available_devices()["default"])

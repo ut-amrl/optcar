@@ -148,7 +148,8 @@ def test_full_collection_matches_source_steps_and_collector(tmp_path, reference,
     assert built['new_windows']==24
     built_manifest=json.loads((tmp_path/'built/road/sim/manifest.json').read_text())
     first=next(iter(built_manifest['episodes'].values()))
-    saved=np.fromfile(tmp_path/'built/road/sim'/first['shards'][0]['path'],np.float32).reshape(-1,3,42)
+    shard=next(s for s in built_manifest['processed_shards'] if s['split']==first['split'])
+    saved=np.fromfile(tmp_path/'built/road/sim'/shard['path'],np.float32).reshape(-1,3,42)
     rows=np.fromfile(out/'data/cpu_0000000000.bin',np.float32).reshape(3,6,15)
     processor=SimpleNamespace(history_horizon=2,total_horizon=3,stride=1)
     chunks=reference['generate_chunks_torch'](processor,torch.tensor(rows))

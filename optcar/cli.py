@@ -158,11 +158,11 @@ def _dispatch(args):
             device=args.device or cfg.get("device", "cpu"), preset=preset, fractions=cfg.get("fractions", [.8, .1, .1]))
         _print(result)
     elif args.command == "build-dataset":
-        from optcar.dataset import DataConfig
+        from optcar.datagen.build_dataset import builder_data_config
         from optcar.datagen.generation_jobs import GenerationJobs
         cfg = read_config(args.config)
         result = GenerationJobs(args.dataset_root).start_build(cfg["output"], cfg["sources"],
-            DataConfig(**cfg.get("data", {})), cfg.get("seed", 42), cfg.get("fractions", [.8, .1, .1]),
+            builder_data_config(cfg.get("data")), cfg.get("seed", 42), cfg.get("fractions", [.8, .1, .1]),
             device=args.device or cfg.get("device"), workers=args.workers if args.workers is not None else cfg.get("workers", 16))
         _print(result)
     elif args.command == "convert":

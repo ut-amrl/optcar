@@ -17,7 +17,7 @@ from optcar.datagen.raw_bins import scan_bins, inspect_bin, bin_frame, action_wi
 from optcar.datagen.raw_bags import RawBagConfig, convert_raw_bags, discover_bags
 from optcar.datagen.dbm_to_dataset import CommandConfig, randomization_parameters
 from optcar.datagen.generation_jobs import GenerationJobs
-from optcar.datagen.build_dataset import build_dataset, inspect_sources
+from optcar.datagen.build_dataset import build_dataset, inspect_sources, builder_data_config
 from optcar.models.dbm_calibration import DEFAULT_FIT_KEYS, fit_parameters, wheel_history
 from optcar.models.dynamic_bicycle import DBMParams, DynamicBicycleModel
 from optcar.models.fkd_transformer import load_checkpoint, predict_window, trajectory_metrics
@@ -311,14 +311,14 @@ def create_app(dataset_root="datasets", bag_root=None):
     @api
     def inspect_dataset_sources():
         payload = request.get_json()
-        return inspect_sources(payload["sources"], DataConfig(**payload.get("data", {})),
+        return inspect_sources(payload["sources"], builder_data_config(payload.get("data")),
                                payload.get("seed", 42), payload.get("fractions", [.8, .1, .1]))
 
     @app.post("/api/dataset-builder/build")
     @api
     def assemble_dataset():
         payload = request.get_json()
-        data = DataConfig(**payload.get("data", {}))
+        data = builder_data_config(payload.get("data"))
         return generation_jobs.start_build(payload["output"], payload["sources"], data,
             payload.get("seed", 42), payload.get("fractions", [.8, .1, .1]), device=payload.get("device"),
             workers=payload.get("workers", 16))

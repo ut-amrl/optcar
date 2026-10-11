@@ -190,6 +190,37 @@ def test_builder_tmux_progress_reconnect_and_separate_dashboards(manager, tmp_pa
     assert 'Complete' in pane and '24 new windows' in pane and 'File loading workers: 3' in pane
 
 
+@pytest.mark.parametrize('batch_size', [None, 10000, 12000])
+def test_builder_output_size_survives_preview_and_tmux_request(tmp_path, monkeypatch, batch_size):
+    from test_dataset_builder import raw_fixture, spec
+    file, _ = raw_fixture(tmp_path/'inputs')
+    launched = []
+    monkeypatch.setattr(GenerationJobs, '_launch', lambda self, directory, record, tmux: launched.append(directory))
+    monkeypatch.setattr('optcar.datagen.generation_jobs.shutil.which', lambda _: '/fixture/tmux')
+    client = create_app(tmp_path/'datasets').test_client()
+    data = {'history_steps': 4, 'future_steps': 3, 'stride': 2}
+    if batch_size is not None:
+        data['shard_windows'] = batch_size
+    request = {'sources': [spec(file)], 'output': str(tmp_path/'built'), 'data': data, 'device': 'cpu'}
+    preview = client.post('/api/dataset-builder/inspect', json=request)
+    assert preview.status_code == 200
+    assert preview.json['config']['shard_windows'] == (batch_size or 10000)
+    result = client.post('/api/dataset-builder/build', json=request)
+    assert result.status_code == 200 and len(launched) == 1
+    snapshot = json.loads((launched[0]/'request.json').read_text())
+    assert snapshot['data']['shard_windows'] == preview.json['config']['shard_windows']
+
+
+@pytest.mark.parametrize('batch_size', [0, -1, 2.5])
+def test_builder_rejects_invalid_output_size_before_launch(tmp_path, batch_size):
+    client = create_app(tmp_path/'datasets').test_client()
+    payload = {'sources': [], 'output': str(tmp_path/'built'), 'device': 'cpu',
+               'data': {'shard_windows': batch_size}}
+    assert client.post('/api/dataset-builder/inspect', json=payload).status_code == 400
+    assert client.post('/api/dataset-builder/build', json=payload).status_code == 400
+    assert not (tmp_path/'datasets/.generation_jobs').exists()
+
+
 def test_builder_cancellation_and_gpu_validation(manager, tmp_path):
     from test_dataset_builder import raw_fixture, spec
     file,_=raw_fixture(tmp_path/'inputs')

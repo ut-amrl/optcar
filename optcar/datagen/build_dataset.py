@@ -18,6 +18,13 @@ from optcar.utils.file_io import safe_name, write_json
 from optcar.utils.devices import available_devices, resolve_device
 
 
+def builder_data_config(settings=None):
+    """Shared GUI/CLI builder settings; output bins default to 10,000 windows."""
+    if isinstance(settings, DataConfig):
+        return settings
+    return DataConfig(**{"shard_windows": 10000, **(settings or {})})
+
+
 def _manifest_episode(path, cache):
     for parent in path.parents:
         manifest = parent / "manifest.json"
@@ -35,7 +42,7 @@ def _manifest_episode(path, cache):
 
 def inspect_sources(sources, data=None, seed=42, fractions=(.8, .1, .1)):
     """Read-only plan. Splits are assigned by session, never by overlapping window."""
-    data = data or DataConfig()
+    data = builder_data_config(data)
     if not isinstance(seed, int) or seed < 0:
         raise ValueError("Split seed must be a nonnegative integer")
     session_split("validate", seed, fractions)
@@ -149,26 +156,28 @@ def _check_output_files(root, grouped, data):
         target = root / terrain / kind
         manifest = target / "manifest.json"
         provenance = {"inputs": entries, "calibrations": [e["calibration"] for e in entries if e["calibration"]]}
-        episodes = {}
+        written = set()
+        counts = defaultdict(int)
         if manifest.exists():
             doc = json.loads(manifest.read_text())
             if (doc.get("config"), doc.get("source"), doc.get("terrain"), doc.get("provenance"),
                 doc.get("process_windows", True)) != (asdict(data), kind, terrain, provenance, True):
                 raise ValueError(f"Dataset files already exist at {target} with different inputs or settings")
-            episodes = doc["episodes"]
+            written = {shard["path"] for shard in doc.get("processed_shards", [])}
+            for shard in doc.get("processed_shards", []):
+                counts[shard["split"]] += 1
         else:
             for relative in ("metadata/schema.json", "metadata/dataset_config.py",
                              "processed/metadata/schema.json", "processed/metadata/dataset_config.py"):
                 path = target / relative
                 if path.exists():
                     raise ValueError(f"Output would replace an existing file: {path}")
-        for entry in entries:
-            name = _episode_name(entry, "batch")
-            if name in episodes:
-                continue
-            for offset in range(0, entry["estimated_windows"], data.shard_windows):
-                path = target / "processed/data" / f"{name}_{offset:08d}.bin"
-                if path.exists() or path.with_suffix(".bin.tmp").exists():
+        for split in ("train", "val", "test"):
+            windows = sum(entry["estimated_windows"] for entry in entries if entry["split"] == split)
+            for index in range(counts[split] + math.ceil(windows / data.shard_windows)):
+                relative = f"processed/data/{split}/processed_{index:010d}.bin"
+                path = target / relative
+                if relative not in written and (path.exists() or path.with_suffix(".bin.tmp").exists()):
                     raise ValueError(f"Output would replace an existing file: {path}")
 
 
@@ -220,7 +229,7 @@ def load_files_parallel(entries, max_workers=16, cancelled=None):
 
 
 def build_dataset(output, sources, data=None, seed=42, fractions=(.8, .1, .1), progress=None, cancelled=None, device=None, workers=16):
-    data = data or DataConfig()
+    data = builder_data_config(data)
     if type(workers) is not int or workers < 1:
         raise ValueError("File loading workers must be a positive integer")
     device = resolve_device(device if device is not None else available_devices()["default"])
@@ -326,5 +335,9 @@ def build_dataset(output, sources, data=None, seed=42, fractions=(.8, .1, .1), p
                     done_windows += len(pending) * per_env
                     writer.commit()
                     completed += 1
-                    report(f"Saved {entry['name']}")
+                    report(f"Processed {entry['name']}")
+                report("Writing final output bins")
+                writer.flush_window_batches()
+                writer.commit()
+                report("Saved output bins")
         return {"dataset": str(root), "completed": completed, "total": plan["files"], "new_windows": windows, "skipped": skipped}

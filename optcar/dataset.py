@@ -1,6 +1,6 @@
 """FKD binary format, episode writer, memory-mapped loader, and terrain sampler."""
 from bisect import bisect_right
-from collections import OrderedDict, defaultdict
+from collections import OrderedDict, defaultdict, deque
 from dataclasses import asdict, dataclass
 from pathlib import Path
 import hashlib
@@ -141,6 +141,10 @@ class DatasetWriter:
                 write_json(self.path, self.manifest)
             self.session_splits = {e["session"]: e["split"] for e in self.manifest["episodes"].values()}
             self.dirty = False
+            self.window_carryover = {split: None for split in ("train", "val", "test")}
+            self.window_allocations = {split: deque() for split in self.window_carryover}
+            self.batch_indices = {split: sum(s["split"] == split for s in self.manifest.get("processed_shards", []))
+                                  for split in self.window_carryover}
         except Exception:
             self.lock.close()
             raise
@@ -150,6 +154,7 @@ class DatasetWriter:
 
     def __exit__(self, *args):
         try:
+            self.flush_window_batches()
             self.commit()
         finally:
             self.lock.close()
@@ -162,15 +167,57 @@ class DatasetWriter:
             self.dirty = False
 
     def contains(self, episode):
-        return episode in self.manifest["episodes"]
+        entry = self.manifest["episodes"].get(episode)
+        return entry is not None and entry.get("stored_windows", entry["windows"]) == entry["windows"]
+
+    def _save_window_batch(self, split, values, progress=None):
+        """WheeledLab save_processed_batch plus OptCar's split/manifest metadata."""
+        index = self.batch_indices[split]
+        filename = f"processed/data/{split}/processed_{index:010d}.bin"
+        path = self.root / filename
+        if path.exists() or path.with_suffix(".bin.tmp").exists():
+            raise ValueError(f"Output would replace an existing file: {path}")
+        if progress:
+            progress("Writing windows")
+        try:
+            self._binary(filename, values.numpy())
+        except BaseException:
+            path.unlink(missing_ok=True)
+            path.with_suffix(".bin.tmp").unlink(missing_ok=True)
+            raise
+        self.manifest.setdefault("processed_shards", []).append(
+            {"path": filename, "shape": list(values.shape), "split": split})
+        self.batch_indices[split] += 1
+        remaining = len(values)
+        allocations = self.window_allocations[split]
+        while remaining:
+            episode, count = allocations[0]
+            take = min(remaining, count)
+            self.manifest["episodes"][episode]["stored_windows"] += take
+            remaining -= take
+            if take == count:
+                allocations.popleft()
+            else:
+                allocations[0] = (episode, count - take)
+        self.dirty = True
+        if progress:
+            progress("Saved windows")
+
+    def flush_window_batches(self):
+        """Only the last output bin of each terrain/source/split may be short."""
+        for split, carryover in self.window_carryover.items():
+            if carryover is not None:
+                self._save_window_batch(split, carryover)
+                self.window_carryover[split] = None
+                self.commit()
 
     def write_window_batches(self, episode, batches, split, session, raw_path, raw_shape, metadata=None,
                              progress=None):
-        """Save WheeledLab-style fixed-size window bins across environment batches.
+        """Carry input windows forward with WheeledLab's _ingest_processed logic.
 
-        Keep each input recording separate for its saved split and atomic resume.
-        Reference the original raw bin instead of copying every trajectory. The
-        carryover logic follows RawDatasetProcessor._ingest_processed.
+        One carryover per split keeps recordings in their existing split. The
+        original raw bin stays in place. Shared output shards are listed once;
+        episode saved counts let interrupted builds skip their stored prefixes.
         """
         safe_name(episode)
         if split not in ("train", "val", "test"):
@@ -179,65 +226,82 @@ class DatasetWriter:
             raise ValueError("A session cannot appear in multiple dataset splits")
         if self.contains(episode):
             return 0
-        shards, written = [], []
-        count, carryover = 0, None
+        episodes = self.manifest["episodes"]
+        previous = episodes.get(episode)
+        stored = previous.get("stored_windows", 0) if previous else 0
+        carryover = self.window_carryover[split]
+        allocations = deque(self.window_allocations[split])
+        stored_counts = {name: episodes[name]["stored_windows"] for name, _ in allocations}
+        shard_start = len(self.manifest.get("processed_shards", []))
+        batch_start = self.batch_indices[split]
+        received, skip = 0, stored
         size = self.config.shard_windows
+        episodes[episode] = {"split": split, "session": session,
+            "raw": str(Path(raw_path).resolve()), "raw_shape": list(raw_shape), "shards": [],
+            "windows": 0, "stored_windows": stored, "metadata": metadata or {}}
 
         def save(values):
-            nonlocal count
-            filename = f"processed/data/{episode}_{count:08d}.bin"
-            path = self.root / filename
-            if path.exists() or path.with_suffix(".bin.tmp").exists():
-                raise ValueError(f"Output would replace an existing file: {path}")
-            written.append(path)
-            if progress:
-                progress(count, "Writing windows")
-            self._binary(filename, values.numpy())
-            shards.append({"path": filename, "shape": list(values.shape)})
-            count += len(values)
-            if progress:
-                progress(count, "Saved windows")
+            def report(phase):
+                if progress:
+                    progress(max(0, episodes[episode]["stored_windows"] - stored), phase)
+            self._save_window_batch(split, values, report)
 
         try:
             for processed in batches:
                 processed = processed.detach().to(device="cpu", dtype=torch.float32)
                 if processed.ndim != 3 or tuple(processed.shape[1:]) != (self.config.window_steps, 42):
                     raise ValueError("Expected processed windows [B,history+future,42]")
-                if carryover is not None:
-                    needed = size - len(carryover)
+                received += len(processed)
+                episodes[episode]["windows"] = received
+                skipped = min(skip, len(processed))
+                processed = processed[skipped:]
+                skip -= skipped
+                if not len(processed):
+                    continue
+                self.window_allocations[split].append((episode, len(processed)))
+                # Copied from WheeledLab RawDatasetProcessor._ingest_processed:
+                # fill the previous remainder, save full batches, retain the tail.
+                current = self.window_carryover[split]
+                if current is not None:
+                    needed = size - len(current)
                     if len(processed) < needed:
-                        extended = torch.empty((len(carryover) + len(processed), *processed.shape[1:]),
+                        extended = torch.empty((len(current) + len(processed), *processed.shape[1:]),
                                                dtype=processed.dtype, device="cpu")
-                        extended[:len(carryover)].copy_(carryover)
-                        extended[len(carryover):].copy_(processed)
-                        carryover = extended
+                        extended[:len(current)].copy_(current)
+                        extended[len(current):].copy_(processed)
+                        self.window_carryover[split] = extended
                         continue
                     to_save = torch.empty((size, *processed.shape[1:]), dtype=processed.dtype, device="cpu")
-                    to_save[:len(carryover)].copy_(carryover)
-                    to_save[len(carryover):].copy_(processed[:needed])
+                    to_save[:len(current)].copy_(current)
+                    to_save[len(current):].copy_(processed[:needed])
                     save(to_save)
                     processed = processed[needed:]
-                    carryover = None
+                    self.window_carryover[split] = None
                 while len(processed) >= size:
                     save(processed[:size])
                     processed = processed[size:]
-                if len(processed):
-                    carryover = processed
-            if carryover is not None:
-                save(carryover)
+                self.window_carryover[split] = processed if len(processed) else None
+            if skip:
+                raise ValueError("Previously stored windows exceed this input's window count")
         except BaseException:
-            # A cancelled/failed input is retried as a whole; earlier committed
-            # recordings and their windows stay available to the loader.
-            for path in written:
-                path.unlink(missing_ok=True)
-                path.with_suffix(".bin.tmp").unlink(missing_ok=True)
+            # Roll back this input only. Earlier inputs' carried windows remain
+            # available for the normal final flush on cancellation or failure.
+            for shard in self.manifest.get("processed_shards", [])[shard_start:]:
+                (self.root / shard["path"]).unlink(missing_ok=True)
+            del self.manifest.get("processed_shards", [])[shard_start:]
+            self.batch_indices[split] = batch_start
+            self.window_carryover[split] = carryover
+            self.window_allocations[split] = allocations
+            for name, count in stored_counts.items():
+                episodes[name]["stored_windows"] = count
+            if previous is None:
+                del episodes[episode]
+            else:
+                episodes[episode] = previous
             raise
-        self.manifest["episodes"][episode] = {"split": split, "session": session,
-            "raw": str(Path(raw_path).resolve()), "raw_shape": list(raw_shape), "shards": shards,
-            "windows": count, "metadata": metadata or {}}
         self.session_splits[session] = split
         self.dirty = True
-        return count
+        return received - stored
 
     def write_episode(self, episode, states, actions, split, session=None, vehicle_id=0, metadata=None,
                       device="cpu", packed_windows=None, raw_tensor=None, progress=None):
@@ -317,7 +381,9 @@ class DatasetWriter:
                     f"class DatasetConfig:\n    control_dt = {cfg.dt!r}\n    feature_dim = 15\n    num_envs = 1\n")
         if not self.process_windows:
             return
-        counts = [s["shape"][0] for e in self.manifest["episodes"].values() for s in e["shards"]]
+        shards = [s for e in self.manifest["episodes"].values() for s in e["shards"]]
+        shards += self.manifest.get("processed_shards", [])
+        counts = [s["shape"][0] for s in shards]
         # FKD's future_horizon includes the current state; ours counts transitions.
         fields = {"history_horizon": cfg.history_steps, "future_horizon": cfg.future_steps + 1,
                   "total_horizon": cfg.window_steps, "chunk_horizon": cfg.window_steps,
@@ -370,6 +436,11 @@ class FKDDataset(Dataset):
                     if episode["split"] != split:
                         continue
                     for shard in episode["shards"]:
+                        self._append(path.parent / shard["path"], tuple(shard["shape"]), doc["source"], doc["terrain"])
+                for shard in doc.get("processed_shards", []):
+                    if shard["split"] not in ("train", "val", "test"):
+                        raise ValueError(f"Invalid processed shard split in {path}")
+                    if shard["split"] == split:
                         self._append(path.parent / shard["path"], tuple(shard["shape"]), doc["source"], doc["terrain"])
             if not manifests:
                 # External generalist data must already be split by episode/session.

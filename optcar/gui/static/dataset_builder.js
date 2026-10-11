@@ -13,6 +13,8 @@ function invalidateBuilder() {
   $('builder-errors').hidden=true;
   const dt=Number($('builder-dt').value),h=Number($('history-steps').value),f=Number($('future-steps').value);
   $('builder-window-hint').textContent=`${h+f} samples per window · ${(Math.max(0,h-1)*dt).toFixed(2)}s observed history · ${(f*dt).toFixed(2)}s future`;
+  const batch=Number($('builder-shard-windows').value);
+  $('builder-output-shape-hint').textContent=`Processed shape: [${batch.toLocaleString()}, ${h+f}, 42]. The final bin for each terrain/source/split may be smaller. Synthetic batch size sets trajectories per raw bin.`;
 }
 function builderRequest(sources=builderState.sources, selected=true) {
   return {output:$('builder-output').value.trim(),device:$('builder-device').value,workers:number('builder-workers'),data:dataConfig(),seed:number('builder-seed'),
@@ -97,7 +99,7 @@ function displayBuilderPlan(plan) {
     const box=document.createElement('div'),label=document.createElement('span'),count=document.createElement('strong');
     label.textContent=title;count.textContent=value.toLocaleString();box.append(label,count);metrics.append(box);
   }
-  const explanation=document.createElement('p');explanation.className='hint';explanation.textContent=`Each window has ${plan.config.history_steps+plan.config.future_steps} samples (${plan.config.history_steps} history + ${plan.config.future_steps} future). Starts are ${plan.config.stride} samples apart. Split counts are windows, not raw timesteps.`;summary.append(metrics,explanation);const errors=$('builder-errors');errors.replaceChildren();
+  const explanation=document.createElement('p');explanation.className='hint';explanation.textContent=`Each window has ${plan.config.history_steps+plan.config.future_steps} samples (${plan.config.history_steps} history + ${plan.config.future_steps} future). Starts are ${plan.config.stride} samples apart. Split counts are windows, not raw timesteps. Output shape: [${plan.config.shard_windows.toLocaleString()}, ${plan.config.history_steps+plan.config.future_steps}, 42], with a smaller final bin per terrain/source/split if needed.`;summary.append(metrics,explanation);const errors=$('builder-errors');errors.replaceChildren();
   for(const message of plan.errors){const item=document.createElement('li');item.textContent=message;errors.append(item);}errors.hidden=!plan.errors.length;
 }
 bind('builder-add-real',()=>addDatasetSource());
@@ -120,7 +122,7 @@ $('builder-build').onclick=async()=>{
   }catch(error){builderStatus(error.message,true);}
   finally{builderState.active=false;$('builder-build').disabled=!builderState.plan||Boolean(builderState.plan.plan.errors.length)||!builderState.plan.plan.files;}
 };
-for(const id of ['builder-workers','builder-device','builder-output','history-steps','future-steps','builder-dt','stride','builder-seed','builder-train','builder-val','builder-test'])$(id).addEventListener('input',invalidateBuilder);
+for(const id of ['builder-workers','builder-device','builder-output','history-steps','future-steps','builder-dt','stride','builder-shard-windows','builder-seed','builder-train','builder-val','builder-test'])$(id).addEventListener('input',invalidateBuilder);
 invalidateBuilder();
 
 // Reuse the generation dashboard's cards and tmux controls for dataset builds.

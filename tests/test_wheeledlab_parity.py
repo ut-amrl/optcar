@@ -4,6 +4,7 @@ No ROS/Isaac/CuPy import or simulation dataset is required. The reference functi
 are loaded from their source independently of OptCar's implementations.
 """
 import ast
+import copy
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -138,7 +139,7 @@ def test_builder_files_match_wheeledlab_whole_file_processor_and_writer(tmp_path
     reference_dir = tmp_path/'reference'; reference_dir.mkdir()
     for index, values in enumerate(expected.split(cfg.shard_windows)):
         ns['save_processed_batch'](SimpleNamespace(timing=False), values, reference_dir, index)
-    actual_files = sorted((tmp_path/'built').rglob('processed/data/*.bin'))
+    actual_files = sorted((tmp_path/'built').rglob('processed/data/**/*.bin'))
     expected_files = sorted(reference_dir.glob('*.bin'))
     assert len(actual_files) == len(expected_files) == 6
     for actual, expected_file in zip(actual_files, expected_files):
@@ -152,3 +153,70 @@ def test_builder_files_match_wheeledlab_whole_file_processor_and_writer(tmp_path
     assert not (tmp_path/'built/road/sim/raw').exists()
     assert file.read_bytes() == original
     assert len(FKDDataset(tmp_path/'built', cfg)) == 93
+
+
+@pytest.mark.parametrize('device', ['cpu', 'cuda:0'])
+def test_cross_file_output_batches_match_wheeledlab_carryover(tmp_path, reference, device):
+    """Run WheeledLab's own nested carryover function, including its final flush."""
+    import time
+    from typing import Optional
+    from optcar.dataset import DataConfig, FKDDataset
+    from optcar.datagen.build_dataset import build_dataset
+    if device.startswith('cuda') and not torch.cuda.is_available():
+        pytest.skip('CUDA is unavailable')
+    source_path=ROOT/'wheeledlab_data/wheeledlab_data/data_processing/processing_sim.py'
+    tree=ast.parse(source_path.read_text())
+    processor_class=next(node for node in tree.body if isinstance(node,ast.ClassDef) and node.name=='RawDatasetProcessor')
+    method=next(node for node in processor_class.body if isinstance(node,ast.FunctionDef) and node.name=='process_dataset_folder')
+    ingest=next(node for node in method.body if isinstance(node,ast.FunctionDef) and node.name=='_ingest_processed')
+    final_flush=next(node for node in ast.walk(method) if isinstance(node,ast.If)
+                     and ast.unparse(node.test)=='carryover is not None and carryover_chunks > 0'
+                     and 'Saving final batch' in ast.unparse(node))
+    factory=ast.parse('''
+def reference_writer(self, output_data_folder, chunks_per_file):
+    carryover=None
+    carryover_chunks=0
+    batch_save_idx=0
+    total_chunks=0
+    chunks_per_file_list=[]
+''').body[0]
+    factory.body.append(copy.deepcopy(ingest))
+    flush=ast.parse('''
+def flush():
+    nonlocal carryover, carryover_chunks, batch_save_idx, total_chunks
+''').body[0]
+    flush.body.append(copy.deepcopy(final_flush))
+    factory.body.extend([flush,ast.parse('return _ingest_processed, flush').body[0]])
+    ns={'torch':torch,'np':np,'Union':Union,'Path':Path,'time':time,'Optional':Optional}
+    load_functions(source_path,['save_processed_batch'],ns)
+    exec(compile(ast.fix_missing_locations(ast.Module(body=[factory],type_ignores=[])),str(source_path),'exec'),ns)
+    processor=SimpleNamespace(history_horizon=4,total_horizon=7,stride=2,timing=False)
+    processor.save_processed_batch=lambda values,path,index:ns['save_processed_batch'](processor,values,path,index)
+    reference_dir=tmp_path/'reference';reference_dir.mkdir()
+    ingest_reference,flush_reference=ns['reference_writer'](processor,reference_dir,10)
+    rng=np.random.default_rng(82)
+    sources=[]
+    for index in range(3):
+        raw=torch.tensor(rng.normal(size=(2,12,15)),dtype=torch.float32,device=device)
+        raw[...,3:7]=euler_to_quat_torch(torch.tensor(rng.normal(size=(24,3)),dtype=torch.float32,device=device)).reshape(2,12,4)
+        raw[:,1::2,3:7]*=-1
+        file=tmp_path/f'raw_{index}.bin';raw.cpu().numpy().tofile(file)
+        sources.append({'path':str(file),'terrain':'road','source':'sim','split':'train',
+                        'columns':15,'num_envs':2,'dt':.02})
+        chunks=reference['generate_chunks_torch'](processor,raw)
+        expected=reference['_process_chunks_to_frames_torch'](processor,chunks).cpu()
+        expected=torch.cat((expected,torch.full((*expected.shape[:2],1),float(index))),-1)
+        ingest_reference(expected)
+    flush_reference()
+    cfg=DataConfig(history_steps=4,future_steps=3,stride=2,shard_windows=10)
+    result=build_dataset(tmp_path/'built',sources,cfg,device=device)
+    actual_files=sorted((tmp_path/'built').rglob('processed/data/**/*.bin'))
+    expected_files=sorted(reference_dir.glob('*.bin'))
+    assert result['new_windows']==18 and len(actual_files)==len(expected_files)==2
+    assert [file.stat().st_size//(7*42*4) for file in actual_files]==[10,8]
+    for actual,expected in zip(actual_files,expected_files):
+        if device=='cpu':
+            assert actual.read_bytes()==expected.read_bytes()
+        else:
+            np.testing.assert_allclose(np.fromfile(actual,np.float32),np.fromfile(expected,np.float32),atol=2e-6,rtol=2e-6)
+    assert len(FKDDataset(tmp_path/'built',cfg))==18

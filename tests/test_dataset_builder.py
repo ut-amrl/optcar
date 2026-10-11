@@ -51,7 +51,8 @@ def test_build_preserves_actions_all_envs_and_restart(tmp_path,width):
     assert len(episodes)==1
     assert episodes[0]['raw']==str(file)
     assert not (tmp_path/'assembled/road/real/raw').exists()
-    first=np.fromfile(tmp_path/'assembled/road/real'/episodes[0]['shards'][0]['path'],np.float32).reshape(-1,7,42)
+    assert episodes[0]['shards']==[] and episodes[0]['stored_windows']==6
+    first=np.fromfile(tmp_path/'assembled/road/real'/manifest['processed_shards'][0]['path'],np.float32).reshape(-1,7,42)
     np.testing.assert_allclose(first[0,:,39:41],rows[0,:7,13:15])
     np.testing.assert_allclose(first[0,3,13:20],[0,0,0,1,0,0,0],atol=1e-6)
     assert len(FKDDataset(tmp_path/'assembled',cfg))==6
@@ -207,8 +208,8 @@ def test_cpu_gpu_build_parity_progress_and_resume(tmp_path, shard_windows):
     assert any('Converting' in p['current'] for p in progress)
     assert any('Writing' in p['current'] for p in progress)
     assert all(p['device']=='cuda:0' for p in progress)
-    cpu_shards=sorted((tmp_path/'cpu').rglob('processed/data/*.bin'))
-    gpu_shards=sorted((tmp_path/'gpu').rglob('processed/data/*.bin'))
+    cpu_shards=sorted((tmp_path/'cpu').rglob('processed/data/**/*.bin'))
+    gpu_shards=sorted((tmp_path/'gpu').rglob('processed/data/**/*.bin'))
     assert len(cpu_shards)==len(gpu_shards)
     for left,right in zip(cpu_shards,gpu_shards):
         np.testing.assert_allclose(np.fromfile(left,np.float32),np.fromfile(right,np.float32),atol=2e-6,rtol=2e-6)
@@ -319,7 +320,8 @@ def test_resume_legacy_per_environment_build_without_rewriting(tmp_path):
     manifest = json.loads((target/'manifest.json').read_text())
     batched = manifest['episodes'][_episode_name(entries[0], 'batch')]
     assert batched['metadata']['environments'] == [2, 3]
-    assert [s['shape'][0] for s in batched['shards']] == [4, 2]
+    assert batched['shards']==[] and batched['stored_windows']==6
+    assert [s['shape'][0] for s in manifest['processed_shards']] == [4, 2]
     assert build_dataset(output, sources, cfg, device='cpu')['new_windows'] == 0
 
 
@@ -332,3 +334,70 @@ def test_cancel_during_batch_write_removes_uncommitted_windows_and_resumes(tmp_p
     assert result['completed'] == result['new_windows'] == 0
     assert not list((tmp_path/'built').rglob('*.bin'))
     assert build_dataset(tmp_path/'built', [spec(file)], cfg, device='cpu')['new_windows'] == 12
+
+
+def test_carryover_combines_input_files_and_loader_preserves_file_ids(tmp_path):
+    sources, originals = [], {}
+    for index in range(3):
+        file, rows = raw_fixture(tmp_path/f'input_{index}', environments=2, source=f'/bags/{index}')
+        rows[...,0] += 100*index
+        rows.tofile(file)
+        sources.append(spec(file))
+        originals[file] = file.read_bytes()
+    cfg=DataConfig(history_steps=4,future_steps=3,stride=2,shard_windows=10)
+    result=build_dataset(tmp_path/'built',sources,cfg,device='cpu')
+    target=tmp_path/'built/road/real'
+    manifest=json.loads((target/'manifest.json').read_text())
+    assert result['new_windows']==18
+    assert [s['shape'] for s in manifest['processed_shards']]==[[10,7,42],[8,7,42]]
+    assert [s['path'] for s in manifest['processed_shards']]==[
+        'processed/data/train/processed_0000000000.bin',
+        'processed/data/train/processed_0000000001.bin']
+    assert len(manifest['episodes'])==3
+    assert all(e['shards']==[] and e['windows']==e['stored_windows']==6 for e in manifest['episodes'].values())
+    packed=np.concatenate([np.fromfile(target/s['path'],np.float32).reshape(s['shape']) for s in manifest['processed_shards']])
+    np.testing.assert_array_equal(packed[:,0,41],np.repeat([0,1,2],6))
+    for index in range(3):
+        np.testing.assert_allclose(packed[index*6:(index+1)*6,0,0],100*index+np.tile([0,.2,.4],2),atol=1e-5)
+        np.testing.assert_allclose(packed[index*6:(index+1)*6,0,39],np.tile([0,.4,.8],2))
+    dataset=FKDDataset(tmp_path/'built',cfg)
+    assert len(dataset)==18 and len(dataset.shards)==2
+    for index in range(18):
+        sample=dataset[index]
+        torch.testing.assert_close(sample['commands'],torch.from_numpy(packed[index,3:-1,39:41]))
+    assert all(file.read_bytes()==original for file,original in originals.items())
+    assert build_dataset(tmp_path/'built',sources,cfg,device='cpu')['new_windows']==0
+
+
+def test_interleaved_splits_have_independent_carryover(tmp_path):
+    sources=[]
+    for index, split in enumerate(['train','val','train','val']):
+        file,rows=raw_fixture(tmp_path/f'input_{index}',environments=2,source=f'/bags/{index}')
+        rows[...,0]+=index*100;rows.tofile(file)
+        sources.append(spec(file,split=split))
+    cfg=DataConfig(history_steps=4,future_steps=3,stride=2,shard_windows=10)
+    build_dataset(tmp_path/'built',sources,cfg,device='cpu')
+    target=tmp_path/'built/road/real'
+    manifest=json.loads((target/'manifest.json').read_text())
+    for split,ids in [('train',[0,2]),('val',[1,3])]:
+        shards=[s for s in manifest['processed_shards'] if s['split']==split]
+        assert [s['shape'][0] for s in shards]==[10,2]
+        packed=np.concatenate([np.fromfile(target/s['path'],np.float32).reshape(s['shape']) for s in shards])
+        np.testing.assert_array_equal(packed[:,0,41],np.repeat(ids,6))
+        dataset=FKDDataset(tmp_path/'built',cfg,split)
+        assert len(dataset)==12 and len(dataset.shards)==2
+
+
+def test_failed_next_input_flushes_previous_carried_windows(tmp_path):
+    first,_=raw_fixture(tmp_path/'first',environments=2,source='/bags/first')
+    second,rows=raw_fixture(tmp_path/'second',environments=2,source='/bags/second')
+    rows[...,3:7]=0;rows.tofile(second)
+    cfg=DataConfig(history_steps=4,future_steps=3,stride=2,shard_windows=10)
+    with pytest.raises(ValueError,match='Zero quaternion'):
+        build_dataset(tmp_path/'built',[spec(first),spec(second)],cfg,device='cpu')
+    target=tmp_path/'built/road/real'
+    manifest=json.loads((target/'manifest.json').read_text())
+    assert [s['shape'][0] for s in manifest['processed_shards']]==[6]
+    assert len(manifest['episodes'])==1
+    assert all(e['windows']==e['stored_windows']==6 for e in manifest['episodes'].values())
+    assert len(FKDDataset(tmp_path/'built',cfg))==6
