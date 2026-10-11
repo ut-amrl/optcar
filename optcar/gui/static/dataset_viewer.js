@@ -1,6 +1,6 @@
 'use strict';
 // Plot the saved processed states directly; the body frame stays at history - 1.
-const datasetViewerState={dataset:null,sample:null,cursor:0,request:0,busy:false};
+const datasetViewerState={dataset:null,sample:null,cursor:0,request:0,busy:false,configBusy:false};
 const datasetViewerStorage='optcar.dataset-viewer.settings';
 const datasetViewerColors={history:'#6bd1d6',future:'#eab58a',anchor:'#c2ed80',cursor:'#e1e9eb'};
 function datasetViewerStatus(text,error=false){
@@ -9,30 +9,76 @@ function datasetViewerStatus(text,error=false){
 }
 function datasetViewerSettings(){
   return {roots:$('dataset-viewer-roots').value.split(/\r?\n/).map(path=>path.trim()).filter(Boolean),
-    config_path:$('dataset-viewer-config').value.trim(),split:$('dataset-viewer-split').value};
+    config_path:$('dataset-viewer-config').value.trim(),split:$('dataset-viewer-split').value,
+    data:{history_steps:Number($('dataset-viewer-history').value),future_steps:Number($('dataset-viewer-future').value),dt:Number($('dataset-viewer-dt').value)}};
+}
+function validateDatasetViewerSettings(settings){
+  const {history_steps:history,future_steps:future,dt}=settings.data;
+  if(!settings.roots.length)throw new Error('Enter at least one dataset directory.');
+  if(!Number.isInteger(history)||history<2)throw new Error('History samples must be an integer of at least 2.');
+  if(!Number.isInteger(future)||future<1)throw new Error('Future transitions must be a positive integer.');
+  if(!Number.isFinite(dt)||dt<=0)throw new Error('Timestep must be positive.');
 }
 function saveDatasetViewerSettings(){
   try{localStorage.setItem(datasetViewerStorage,JSON.stringify(datasetViewerSettings()));}catch{}
 }
 function datasetViewerControls(){
-  const {dataset,sample,busy}=datasetViewerState,loaded=Boolean(dataset?.count),index=sample?.index??0;
-  $('dataset-viewer-load').disabled=busy;
+  const {dataset,sample,busy,configBusy}=datasetViewerState,loaded=Boolean(dataset?.count),index=sample?.index??0;
+  const blocked=busy||configBusy;
+  $('dataset-viewer-load').disabled=blocked;
   $('dataset-viewer-load').textContent=busy?'Loading…':'Load dataset';
-  $('dataset-viewer-index').disabled=!loaded||busy;
-  $('dataset-viewer-show').disabled=!loaded||busy;
-  $('dataset-viewer-previous').disabled=!sample||busy||index<=0;
-  $('dataset-viewer-next').disabled=!sample||busy||index>=dataset.count-1;
-  $('dataset-viewer-frame').disabled=!sample||busy;
-  $('dataset-viewer-current').disabled=!sample||busy;
+  $('dataset-viewer-config-load').disabled=busy||configBusy;
+  $('dataset-viewer-config-save').disabled=busy||configBusy;
+  $('dataset-viewer-index').disabled=!loaded||blocked;
+  $('dataset-viewer-show').disabled=!loaded||blocked;
+  $('dataset-viewer-previous').disabled=!sample||blocked||index<=0;
+  $('dataset-viewer-next').disabled=!sample||blocked||index>=dataset.count-1;
+  $('dataset-viewer-frame').disabled=!sample||blocked;
+  $('dataset-viewer-current').disabled=!sample||blocked;
 }
 function invalidateDatasetViewer(){
   datasetViewerState.request++;
   datasetViewerState.dataset=null;datasetViewerState.sample=null;datasetViewerState.busy=false;
+  $('dataset-viewer-index').value=0;
   $('dataset-viewer-metadata').hidden=true;
   $('dataset-viewer-title').textContent='See the saved training data.';
   $('dataset-viewer-path').textContent='Settings changed. Load the dataset to inspect its trajectories.';
   saveDatasetViewerSettings();datasetViewerControls();drawDatasetViewer();
   datasetViewerStatus('Settings changed. Click Load dataset.');
+}
+async function loadDatasetViewerConfig(path=$('dataset-viewer-config').value.trim(),scopeRoot=null){
+  if(!path)throw new Error('Enter the full path of the config file to load.');
+  const revision=datasetViewerState.request;
+  datasetViewerState.configBusy=true;datasetViewerControls();datasetViewerStatus('Reading viewer config…');
+  try{
+    const config=await api('/api/dataset-viewer/config/load',{path});
+    if(revision!==datasetViewerState.request||$('dataset-viewer-config').value.trim()!==path)return false;
+    const hasRoots=Array.isArray(config.roots)&&config.roots.length>0;
+    if(scopeRoot)$('dataset-viewer-roots').value=scopeRoot;
+    else if(hasRoots)$('dataset-viewer-roots').value=config.roots.join('\n');
+    $('dataset-viewer-history').value=config.data.history_steps;
+    $('dataset-viewer-future').value=config.data.future_steps;
+    $('dataset-viewer-dt').value=config.data.dt;
+    $('dataset-viewer-split').value=config.split;
+    $('dataset-viewer-config').value=config.config_path;
+    invalidateDatasetViewer();
+    datasetViewerStatus(scopeRoot||hasRoots?'Config loaded. Edit settings or click Load dataset.':'Window settings loaded; existing directories were kept. Enter dataset directories, then click Load dataset.');
+    return true;
+  }catch(error){if(revision===datasetViewerState.request&&$('dataset-viewer-config').value.trim()===path)throw error;return false;}
+  finally{datasetViewerState.configBusy=false;datasetViewerControls();}
+}
+async function saveDatasetViewerConfig(){
+  const settings=datasetViewerSettings(),path=settings.config_path;
+  if(!path)throw new Error('Choose a full path and YAML or JSON filename to save the viewer config.');
+  if(!path.startsWith('/')&&!path.startsWith('~/'))throw new Error('Enter the full path and filename to save the viewer config.');
+  if(!/\.(yaml|yml|json)$/i.test(path)||/(^|\/)dataset_build\.json$/i.test(path))throw new Error('Choose a viewer YAML or JSON filename. Generated dataset metadata is read-only.');
+  validateDatasetViewerSettings(settings);
+  datasetViewerState.configBusy=true;datasetViewerControls();datasetViewerStatus('Saving viewer config…');
+  try{
+    const config=await api('/api/dataset-viewer/config/save',{path,roots:settings.roots,data:settings.data,split:settings.split});
+    if($('dataset-viewer-config').value.trim()===path)$('dataset-viewer-config').value=config.config_path;
+    saveDatasetViewerSettings();datasetViewerStatus(`Viewer config saved: ${config.config_path}`);
+  }finally{datasetViewerState.configBusy=false;datasetViewerControls();}
 }
 function showDatasetViewerMetadata(dataset){
   const list=$('dataset-viewer-metadata');list.replaceChildren();list.hidden=false;
@@ -59,13 +105,12 @@ async function fetchDatasetViewerSample(index,request){
 }
 async function loadDatasetViewer(){
   const settings=datasetViewerSettings();
-  if(!settings.roots.length)throw new Error('Enter at least one dataset directory.');
-  if(!settings.config_path)throw new Error('Enter the full path to the dataset config file.');
+  validateDatasetViewerSettings(settings);
   const previousIndex=Number($('dataset-viewer-index').value),request=++datasetViewerState.request;
   datasetViewerState.busy=true;datasetViewerState.dataset=null;datasetViewerState.sample=null;
   $('dataset-viewer-title').textContent='Loading dataset…';$('dataset-viewer-path').textContent=settings.roots.join(' · ');
   $('dataset-viewer-metadata').hidden=true;datasetViewerControls();drawDatasetViewer();saveDatasetViewerSettings();
-  datasetViewerStatus('Reading dataset configuration and file index…');
+  datasetViewerStatus('Indexing dataset with the visible window settings…');
   try{
     const dataset=await api('/api/dataset-viewer/open',settings);
     if(request!==datasetViewerState.request)return;
@@ -156,14 +201,20 @@ function drawDatasetViewer(){
   $('dataset-viewer-forward-value').textContent=`Stored body vx ${sample.body[cursor][7].toFixed(3)}`;
   $('dataset-viewer-steering-value').textContent=`Command ${sample.actions[cursor][1].toFixed(3)}`;
 }
-function openProcessedDataset(root,configPath=''){
-  $('dataset-viewer-roots').value=root;$('dataset-viewer-config').value=configPath;
+async function openProcessedDataset(root,configPath=''){
+  const path=configPath||root.replace(/\/+$/,'')+'/dataset_build.json';
+  $('dataset-viewer-roots').value=root;$('dataset-viewer-config').value=path;
   $('dataset-viewer-split').value='train';$('dataset-viewer-index').value=0;
   invalidateDatasetViewer();selectTab('dataset-viewer');
-  datasetViewerStatus('Output folder filled in. Choose its dataset config file, then click Load dataset.');
+  try{
+    if(await loadDatasetViewerConfig(path,root))datasetViewerStatus('Output folder and build settings loaded. Click Load dataset. To save a viewer config, choose a YAML or JSON filename.');
+  }catch(error){datasetViewerStatus(`Output folder filled in. Enter its window settings or load a config, then click Load dataset. ${error.message}`);}
 }
-for(const id of ['dataset-viewer-roots','dataset-viewer-config','dataset-viewer-split'])$(id).addEventListener('input',invalidateDatasetViewer);
+for(const id of ['dataset-viewer-roots','dataset-viewer-history','dataset-viewer-future','dataset-viewer-dt','dataset-viewer-split'])$(id).addEventListener('input',invalidateDatasetViewer);
+$('dataset-viewer-config').addEventListener('input',saveDatasetViewerSettings);
 const datasetViewerAction=action=>async()=>{try{await action();}catch(error){datasetViewerStatus(error.message,true);}};
+$('dataset-viewer-config-load').onclick=datasetViewerAction(()=>loadDatasetViewerConfig());
+$('dataset-viewer-config-save').onclick=datasetViewerAction(saveDatasetViewerConfig);
 $('dataset-viewer-load').onclick=datasetViewerAction(loadDatasetViewer);
 $('dataset-viewer-show').onclick=datasetViewerAction(()=>showDatasetViewerTrajectory());
 $('dataset-viewer-previous').onclick=datasetViewerAction(()=>showDatasetViewerTrajectory(datasetViewerState.sample.index-1));
@@ -173,7 +224,13 @@ $('dataset-viewer-frame').addEventListener('input',()=>setDatasetViewerFrame($('
 $('dataset-viewer-current').addEventListener('change',()=>setDatasetViewerFrame($('dataset-viewer-current').value));
 try{
   const saved=JSON.parse(localStorage.getItem(datasetViewerStorage)||'null');
-  if(saved){$('dataset-viewer-roots').value=(saved.roots||[]).join('\n');$('dataset-viewer-config').value=saved.config_path||'';if(['train','val','test','all'].includes(saved.split))$('dataset-viewer-split').value=saved.split;}
+  if(saved){
+    $('dataset-viewer-roots').value=(saved.roots||[]).join('\n');$('dataset-viewer-config').value=saved.config_path||'';
+    if(['train','val','test','all'].includes(saved.split))$('dataset-viewer-split').value=saved.split;
+    for(const [id,key,minimum]of [['dataset-viewer-history','history_steps',2],['dataset-viewer-future','future_steps',1],['dataset-viewer-dt','dt',.000001]]){
+      const value=saved.data?.[key];if(Number.isFinite(value)&&value>=minimum&&(key==='dt'||Number.isInteger(value)))$(id).value=value;
+    }
+  }
 }catch{}
 new ResizeObserver(()=>requestAnimationFrame(drawDatasetViewer)).observe($('dataset-viewer-world'));
 new ResizeObserver(()=>requestAnimationFrame(drawDatasetViewer)).observe($('dataset-viewer-body'));

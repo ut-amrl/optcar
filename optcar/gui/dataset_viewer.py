@@ -15,7 +15,7 @@ import torch
 import yaml
 
 from optcar.dataset import DataConfig, FKDDataset
-from optcar.utils.file_io import read_config
+from optcar.utils.file_io import read_config, write_json, write_yaml
 from optcar.utils.math import yaw_from_quat_torch
 
 
@@ -60,6 +60,10 @@ def read_dataset_config(path):
     except (SyntaxError, yaml.YAMLError) as exc:
         raise ValueError(f"Cannot read dataset config {path}: {exc}") from exc
 
+    return _parse_dataset_config(values)
+
+
+def _parse_dataset_config(values):
     for key in ("features", "feature_dim"):
         if key in values and values[key] != 42:
             raise ValueError("Processed FKD datasets require 42 features (including vehicle ID)")
@@ -92,27 +96,143 @@ def read_dataset_config(path):
     return config
 
 
+def _viewer_config_path(path, saving=False):
+    if not isinstance(path, (str, Path)) or not str(path).strip():
+        raise ValueError("Enter a dataset config path including the filename")
+    requested = Path(str(path).strip()).expanduser()
+    path = requested.resolve()
+    if saving:
+        protected = {"manifest.json", "dataset_build.json", "schema.json"}
+        if requested.name.lower() in protected or path.name.lower() in protected or path.suffix.lower() == ".py":
+            raise ValueError("Generated dataset metadata cannot be overwritten; choose a new config filename")
+        if path.suffix.lower() not in (".yaml", ".yml", ".json") or path.is_dir():
+            raise ValueError("Choose a config filename ending in .yaml, .yml or .json")
+    return path
+
+
+def _viewer_roots(roots, base=None, allow_empty=False):
+    if isinstance(roots, str):
+        roots = [line.strip() for line in roots.splitlines() if line.strip()]
+    if allow_empty and (roots is None or roots == []):
+        return []
+    if not isinstance(roots, list) or not roots or not all(isinstance(root, str) and root.strip() for root in roots):
+        raise ValueError("Enter at least one dataset directory, one per line")
+    normalized = []
+    for root in roots:
+        path = Path(root.strip()).expanduser()
+        if base is not None and not path.is_absolute():
+            path = base / path
+        normalized.append(str(path.resolve()))
+    return list(dict.fromkeys(normalized))
+
+
+def _viewer_split(split):
+    if split not in ("train", "val", "test", "all"):
+        raise ValueError("Choose train, val, test or all splits")
+    return split
+
+
+def _editable_data_config(data):
+    if isinstance(data, DataConfig):
+        data = asdict(data)
+    if not isinstance(data, dict) or any(key not in data for key in ("history_steps", "future_steps", "dt")):
+        raise ValueError("Enter history, future and timestep for the dataset")
+    if any(isinstance(data[key], bool) for key in ("history_steps", "future_steps", "dt")) or any(
+            not isinstance(data[key], int) for key in ("history_steps", "future_steps")):
+        raise ValueError("History/future must be integers and timestep must be a positive number")
+    try:
+        return _parse_dataset_config(data)
+    except TypeError as exc:
+        raise ValueError("History/future must be integers and timestep must be a positive number") from exc
+
+
+def _metadata_roots(path, doc):
+    if path.name == "dataset_build.json" and isinstance(doc.get("config"), dict):
+        return [str(path.parent)]
+    if path.name == "manifest.json" and doc.get("schema", {}).get("features") == 42 and "episodes" in doc:
+        return [str(path.parent)]
+    if path.parent.name == "metadata" and path.name in ("dataset_config.py", "schema.json"):
+        candidate = path.parent.parent
+        for parent in (candidate, *candidate.parents):
+            manifest = parent / "manifest.json"
+            if manifest.is_file():
+                saved = read_config(manifest)
+                if saved.get("schema", {}).get("features") == 42 and "episodes" in saved:
+                    return [str(parent)]
+        if (candidate / "data").is_dir() or any(candidate.glob("*.bin")):
+            return [str(candidate)]
+    return []
+
+
+def load_viewer_config(path):
+    """Load editable dimensions and ordered dataset paths without reading bins."""
+    path = _viewer_config_path(path)
+    config = read_dataset_config(path)
+    doc = {} if path.suffix.lower() == ".py" else read_config(path)
+    if "datasets" in doc:
+        roots = doc["datasets"]
+    elif isinstance(doc.get("training"), dict) and "datasets" in doc["training"]:
+        roots = doc["training"]["datasets"]
+    else:
+        roots = _metadata_roots(path, doc)
+    return {"config_path": str(path),
+            "roots": _viewer_roots(roots, path.parent, allow_empty=True),
+            "data": asdict(config), "split": _viewer_split(doc.get("split", "train"))}
+
+
+def save_viewer_config(path, roots, data, split):
+    """Save a reusable viewer config, preserving other existing config sections."""
+    path = _viewer_config_path(path, saving=True)
+    roots = _viewer_roots(roots)
+    config = _editable_data_config(data)
+    split = _viewer_split(split)
+    try:
+        doc = read_config(path) if path.exists() else {}
+    except yaml.YAMLError as exc:
+        raise ValueError(f"Cannot read dataset config {path}: {exc}") from exc
+    if "training" in doc and not isinstance(doc["training"], dict):
+        raise ValueError("Existing training configuration must be a mapping")
+    values = doc.get("data", {})
+    if not isinstance(values, dict):
+        raise ValueError("Existing dataset configuration must be a mapping")
+    values = values.copy()
+    values.update({key: getattr(config, key) for key in ("history_steps", "future_steps", "dt")})
+    config = _parse_dataset_config(values)
+    doc.update({"datasets": roots,
+                "data": values,
+                "split": split})
+    if isinstance(doc.get("training"), dict) and "datasets" in doc["training"]:
+        doc["training"]["datasets"] = roots
+    if path.suffix.lower() == ".json":
+        write_json(path, doc)
+    else:
+        write_yaml(path, doc)
+    return {"config_path": str(path), "roots": roots,
+            "data": asdict(config), "split": split}
+
+
 class DatasetViewer:
     """Bounded datasets/memmaps, with one copied window returned per request."""
     def __init__(self):
         self.datasets = OrderedDict()
         self.lock = threading.RLock()
 
-    def open(self, roots, config_path, split="train"):
-        if isinstance(roots, str):
-            roots = [line.strip() for line in roots.splitlines() if line.strip()]
-        if not isinstance(roots, list) or not roots or not all(isinstance(root, str) and root.strip() for root in roots):
-            raise ValueError("Enter at least one dataset directory, one per line")
-        roots = list(dict.fromkeys(str(Path(root.strip()).expanduser().resolve()) for root in roots))
+    def open(self, roots=None, config_path=None, split=None, data=None):
+        if data is None:
+            loaded = load_viewer_config(config_path)
+            config = DataConfig(**loaded["data"])
+            if roots is None or roots == [] or (isinstance(roots, str) and not roots.strip()):
+                roots = loaded["roots"]
+            config_path = loaded["config_path"]
+            split = loaded["split"] if split is None else split
+        else:
+            config = _editable_data_config(data)
+            config_path = str(_viewer_config_path(config_path)) if config_path else None
+        roots = _viewer_roots(roots)
         for root in roots:
             if not Path(root).is_dir():
                 raise ValueError(f"Dataset directory does not exist: {root}")
-        if not isinstance(config_path, str) or not config_path.strip():
-            raise ValueError("Enter the dataset config path")
-        config_path = str(Path(config_path.strip()).expanduser().resolve())
-        if split not in ("train", "val", "test", "all"):
-            raise ValueError("Choose train, val, test or all splits")
-        config = read_dataset_config(config_path)
+        split = _viewer_split("train" if split is None else split)
         dataset = FKDDataset(roots, config, split=split, allow_wheeledlab=True)
         identifier = uuid.uuid4().hex
         with self.lock:

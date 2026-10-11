@@ -189,11 +189,13 @@
 <div id="dataset-viewer-workspace" class="workspace dataset-viewer-workspace" hidden>
 <aside aria-label="Dataset viewer settings">
   <section><span class="eyebrow">PROCESSED DATA</span><h2>Inspect training windows.</h2>
+    <label>Viewer config path<input id="dataset-viewer-config" placeholder="/full/path/to/viewer.yaml"></label>
+    <div class="two"><button id="dataset-viewer-config-load" class="secondary">Load config</button><button id="dataset-viewer-config-save" class="secondary">Save config</button></div>
+    <p class="hint">Save directories and settings together in a YAML or JSON file at this exact path. Legacy dataset_config.py can load window settings.</p>
     <label>Dataset directories<textarea id="dataset-viewer-roots" rows="4" placeholder="/full/path/to/processed/dataset&#10;/full/path/to/another/dataset"></textarea></label>
     <p class="hint">One directory per line. Trajectory indices span all selected files.</p>
-    <label>Dataset config path<input id="dataset-viewer-config" placeholder="/full/path/to/dataset_builder.yaml"></label>
-    <p class="hint">YAML or WheeledLab's metadata/dataset_config.py.</p>
-    <label>Split<select id="dataset-viewer-split"><option value="train">Training</option><option value="val">Validation</option><option value="test">Test</option><option value="all">All splits</option></select></label>
+    <div class="two"><label>History samples<input id="dataset-viewer-history" type="number" min="2" step="1" value="250"></label><label>Future transitions<input id="dataset-viewer-future" type="number" min="1" step="1" value="50"></label></div>
+    <div class="two"><label>Timestep (s)<input id="dataset-viewer-dt" type="number" min="0.000001" step="0.001" value="0.02"></label><label>Split<select id="dataset-viewer-split"><option value="train">Training</option><option value="val">Validation</option><option value="test">Test</option><option value="all">All splits</option></select></label></div>
     <button id="dataset-viewer-load" class="primary wide">Load dataset</button>
     <dl id="dataset-viewer-metadata" class="dataset-viewer-metadata" hidden></dl>
   </section>
@@ -206,7 +208,7 @@
 </aside>
 <main>
   <div class="view-heading"><div><span class="eyebrow">DATASET VIEWER</span><h1 id="dataset-viewer-title">See the saved training data.</h1></div></div>
-  <p id="dataset-viewer-path" class="hint dataset-viewer-path">Load a processed dataset and its configuration to inspect a trajectory.</p>
+  <p id="dataset-viewer-path" class="hint dataset-viewer-path">Enter processed dataset directories and window settings, then load a trajectory.</p>
   <div class="legend dataset-viewer-legend"><span class="dataset-history">History</span><span class="dataset-future">Future</span><span class="dataset-anchor">Current anchor</span><span class="dataset-cursor">Selected sample</span></div>
   <div class="dataset-viewer-trajectories">
     <div class="trajectory-panel"><div class="plot-heading">World trajectory <small>meters</small></div><canvas id="dataset-viewer-world" aria-label="Saved world trajectory"></canvas><div class="plot-footer">World coordinates<span id="dataset-viewer-world-value">—</span></div></div>
@@ -217,7 +219,7 @@
     <div><div class="plot-heading">Velocity <small>m/s</small></div><div class="bin-signal-legend"><span class="bin-command-color" id="dataset-viewer-velocity-value">Command —</span><span class="bin-body-color" id="dataset-viewer-forward-value">Stored body vx —</span></div><canvas id="dataset-viewer-velocity" aria-label="Commanded velocity and saved body forward velocity"></canvas></div>
     <div><div class="plot-heading">Steering <small>radians</small></div><div class="bin-signal-legend"><span class="bin-command-color" id="dataset-viewer-steering-value">Command —</span></div><canvas id="dataset-viewer-steering" aria-label="Saved steering commands"></canvas></div>
   </div>
-  <div id="dataset-viewer-status" role="status">Ready. Choose dataset directories and a config file.</div>
+  <div id="dataset-viewer-status" role="status">Ready. Load a config or enter directories and window settings.</div>
 </main>
 </div>
 <div id="dynamics-workspace" class="workspace" hidden>

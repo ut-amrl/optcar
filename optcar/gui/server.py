@@ -24,7 +24,7 @@ from optcar.models.fkd_transformer import load_checkpoint, predict_window, traje
 from optcar.utils.file_io import read_config, safe_name, terrain_path, write_yaml
 from optcar.utils.math import qinverse_torch, qrotate_torch, yaw_from_quat_torch
 from optcar.utils.devices import available_devices
-from optcar.gui.dataset_viewer import DatasetViewer
+from optcar.gui.dataset_viewer import DatasetViewer, load_viewer_config, save_viewer_config
 
 
 def create_app(dataset_root="datasets", bag_root=None):
@@ -147,7 +147,20 @@ def create_app(dataset_root="datasets", bag_root=None):
     @api
     def open_processed_dataset():
         payload = request.get_json()
-        return dataset_viewer.open(payload.get("roots"), payload.get("config_path"), payload.get("split", "train"))
+        return dataset_viewer.open(payload.get("roots"), payload.get("config_path"),
+                                   payload.get("split"), payload.get("data"))
+
+    @app.post("/api/dataset-viewer/config/load")
+    @api
+    def load_processed_dataset_config():
+        return load_viewer_config(request.get_json().get("path"))
+
+    @app.post("/api/dataset-viewer/config/save")
+    @api
+    def save_processed_dataset_config():
+        payload = request.get_json()
+        return save_viewer_config(payload.get("path"), payload.get("roots"),
+                                  payload.get("data"), payload.get("split", "train"))
 
     @app.post("/api/dataset-viewer/sample")
     @api

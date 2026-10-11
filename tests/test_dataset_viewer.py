@@ -8,7 +8,9 @@ import torch
 import yaml
 
 from optcar.dataset import DataConfig, DatasetWriter, FKDDataset
-from optcar.gui.dataset_viewer import DatasetViewer, read_dataset_config
+from optcar.gui.dataset_viewer import (
+    DatasetViewer, load_viewer_config, read_dataset_config, save_viewer_config,
+)
 from optcar.gui.server import create_app
 
 
@@ -312,3 +314,185 @@ def test_viewer_keeps_only_four_recently_used_datasets(tmp_path):
     assert viewer.sample(first, 0)['index'] == 0
     with pytest.raises(ValueError, match='expired'):
         viewer.sample(second, 0)
+
+
+@pytest.mark.parametrize('suffix', ['.yaml', '.yml', '.json'])
+def test_viewer_config_roundtrip_includes_ordered_directories_and_all_editable_fields(tmp_path, monkeypatch, suffix):
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / 'configs' / ('viewer' + suffix)
+    data = {'history_steps': 3, 'future_steps': 2, 'dt': .04}
+    # Saving and loading config does not require the datasets to be mounted yet.
+    expected_roots = [str(tmp_path / 'second'), str(tmp_path / 'first')]
+    saved = save_viewer_config(path, ['second', 'first', 'second'], data, 'all')
+    assert saved == {'config_path': str(path), 'roots': expected_roots,
+                     'data': asdict(DataConfig(**data)), 'split': 'all'}
+    assert load_viewer_config(path) == saved
+    assert yaml.safe_load(path.read_text()) == {'datasets': expected_roots, 'data': data, 'split': 'all'}
+    assert not (tmp_path / 'first').exists() and not (tmp_path / 'second').exists()
+    if suffix == '.json':
+        assert json.loads(path.read_text())['datasets'] == expected_roots
+
+
+def test_load_viewer_training_config_resolves_relative_directories_and_top_level_takes_precedence(tmp_path):
+    path = config_fixture(tmp_path / 'training.yaml')
+    doc = yaml.safe_load(path.read_text())
+    doc['training'] = {'datasets': ['second', 'first'], 'epochs': 50}
+    path.write_text(yaml.safe_dump(doc))
+    loaded = load_viewer_config(path)
+    assert loaded['roots'] == [str(tmp_path / 'second'), str(tmp_path / 'first')]
+    assert loaded['split'] == 'train'
+    assert loaded['data']['history_steps'] == 3 and loaded['data']['stride'] == 2
+    doc['datasets'] = ['top']
+    doc['split'] = 'val'
+    path.write_text(yaml.safe_dump(doc))
+    assert load_viewer_config(path)['roots'] == [str(tmp_path / 'top')]
+    assert load_viewer_config(path)['split'] == 'val'
+
+
+def test_save_viewer_existing_training_config_preserves_unrelated_settings(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / 'training.yaml'
+    old_data = {'history_steps': 250, 'future_steps': 50, 'dt': .02,
+                'stride': 75, 'shard_windows': 10000, 'features': 42, 'custom_data': {'keep': True}}
+    doc = {'data': old_data, 'training': {'datasets': ['old'], 'epochs': 90, 'batch_size': 32},
+           'model': {'hidden_size': 256}, 'commands': {'duration': 10}, 'notes': 'keep this'}
+    path.write_text(yaml.safe_dump(doc))
+    saved = save_viewer_config(path, ['real', 'sim'], {'history_steps': 3, 'future_steps': 2, 'dt': .04}, 'test')
+    edited = yaml.safe_load(path.read_text())
+    roots = [str(tmp_path / 'real'), str(tmp_path / 'sim')]
+    assert edited['datasets'] == edited['training']['datasets'] == roots
+    assert edited['training'] == {**doc['training'], 'datasets': roots}
+    assert edited['data'] == {**old_data, 'history_steps': 3, 'future_steps': 2, 'dt': .04}
+    for key in ('model', 'commands', 'notes'):
+        assert edited[key] == doc[key]
+    assert saved == load_viewer_config(path)
+    assert saved['data']['stride'] == 75 and saved['data']['shard_windows'] == 10000
+
+
+@pytest.mark.parametrize('name', ['manifest.json', 'dataset_build.json', 'schema.json', 'dataset_config.py'])
+def test_save_viewer_config_cannot_overwrite_generated_metadata(tmp_path, name):
+    path = tmp_path / name
+    path.write_bytes(b'preserve generated metadata\n')
+    before = (path.read_bytes(), path.stat().st_ino, path.stat().st_mtime_ns)
+    with pytest.raises(ValueError, match='new config filename'):
+        save_viewer_config(path, ['dataset'], {'history_steps': 3, 'future_steps': 2, 'dt': .04}, 'train')
+    assert (path.read_bytes(), path.stat().st_ino, path.stat().st_mtime_ns) == before
+
+
+def test_save_viewer_config_protects_generated_metadata_through_symlink(tmp_path):
+    metadata = tmp_path / 'schema.json'
+    metadata.write_bytes(b'preserve metadata\n')
+    alias = tmp_path / 'viewer.yaml'
+    alias.symlink_to(metadata)
+    with pytest.raises(ValueError, match='new config filename'):
+        save_viewer_config(alias, ['dataset'], {'history_steps': 3, 'future_steps': 2, 'dt': .04}, 'train')
+    assert alias.is_symlink() and metadata.read_bytes() == b'preserve metadata\n'
+
+
+@pytest.mark.parametrize('change', [
+    {'path': ''}, {'path': None}, {'path': 'missing/config'}, {'path': 'missing/config.txt'},
+    {'roots': []}, {'roots': ['']}, {'roots': [None]}, {'split': 'valid'},
+    {'data': {'dt': .04}}, {'data': {'history_steps': True, 'future_steps': 2, 'dt': .04}},
+    {'data': {'history_steps': 3, 'future_steps': 0, 'dt': .04}},
+    {'data': {'history_steps': 3, 'future_steps': 2, 'dt': float('nan')}},
+])
+def test_save_viewer_config_validates_before_creating_files(tmp_path, change):
+    kwargs = {'path': str(tmp_path / 'missing' / 'viewer.yaml'), 'roots': ['dataset'],
+              'data': {'history_steps': 3, 'future_steps': 2, 'dt': .04}, 'split': 'train', **change}
+    if isinstance(kwargs['path'], str) and kwargs['path'].startswith('missing/'):
+        kwargs['path'] = str(tmp_path / kwargs['path'])
+    with pytest.raises(ValueError):
+        save_viewer_config(**kwargs)
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize('text', ['data:\n  history_steps: [3\n', 'data: null\n', 'training: null\n'])
+def test_save_viewer_config_rejects_malformed_existing_file_without_modification(tmp_path, text):
+    path = tmp_path / 'viewer.yaml'
+    path.write_text(text)
+    before = (path.read_bytes(), path.stat().st_ino, path.stat().st_mtime_ns)
+    client = create_app(tmp_path / 'gui').test_client()
+    response = client.post('/api/dataset-viewer/config/save', json={'path': str(path), 'roots': ['dataset'],
+        'data': {'history_steps': 3, 'future_steps': 2, 'dt': .04}, 'split': 'train'})
+    assert response.status_code == 400, response.get_json()
+    assert (path.read_bytes(), path.stat().st_ino, path.stat().st_mtime_ns) == before
+
+
+def test_load_viewer_config_infers_generated_roots_and_keeps_legacy_dimension_only_configs(tmp_path):
+    cfg = DataConfig(history_steps=3, future_steps=2, dt=.04, stride=2, shard_windows=2)
+    flat = tmp_path / 'processed' / 'sim' / 'road'
+    legacy = tmp_path / 'old' / 'road' / 'sim'
+    assembled_fixture(flat, cfg, flat=True)
+    assembled_fixture(legacy, cfg)
+    for root, metadata in [(flat, flat / 'metadata'), (legacy, legacy / 'processed' / 'metadata')]:
+        for name in ('dataset_config.py', 'schema.json'):
+            loaded = load_viewer_config(metadata / name)
+            assert loaded['roots'] == [str(root)]
+            assert loaded['data']['history_steps'] == 3 and loaded['data']['future_steps'] == 2
+    index = tmp_path / 'processed' / 'dataset_build.json'
+    index.write_text(json.dumps({'config': asdict(cfg), 'output_layout': 'source_terrain_split_v1'}))
+    assert load_viewer_config(index)['roots'] == [str(index.parent)]
+    assert load_viewer_config(flat / 'manifest.json')['roots'] == [str(flat)]
+    assert load_viewer_config(config_fixture(tmp_path / 'dimensions.yaml'))['roots'] == []
+    plain = tmp_path / 'wheeledlab' / 'processed'
+    (plain / 'metadata').mkdir(parents=True)
+    (plain / 'data').mkdir()
+    py = plain / 'metadata' / 'dataset_config.py'
+    py.write_text('class ProcessedDatasetConfig:\n    history_horizon = 3\n    future_horizon = 3\n    control_dt = .04\n')
+    assert load_viewer_config(py)['roots'] == [str(plain)]
+
+
+def test_api_viewer_config_save_load_and_open_fills_roots_dimensions_and_split(tmp_path):
+    cfg = DataConfig(history_steps=3, future_steps=2, dt=.04, stride=2, shard_windows=2)
+    roots = [tmp_path / 'processed' / 'real' / 'road', tmp_path / 'processed' / 'sim' / 'road']
+    for root in roots:
+        assembled_fixture(root, cfg, flat=True)
+    client = create_app(tmp_path / 'gui').test_client()
+    path = tmp_path / 'configs' / 'viewer.yaml'
+    saved = client.post('/api/dataset-viewer/config/save', json={'path': str(path),
+        'roots': [str(root) for root in roots],
+        'data': {'history_steps': 3, 'future_steps': 2, 'dt': .04}, 'split': 'val'})
+    assert saved.status_code == 200, saved.get_json()
+    loaded = client.post('/api/dataset-viewer/config/load', json={'path': str(path)})
+    assert loaded.status_code == 200 and loaded.get_json() == saved.get_json()
+    opened = client.post('/api/dataset-viewer/open', json={'config_path': str(path)})
+    assert opened.status_code == 200, opened.get_json()
+    assert opened.json['roots'] == [str(root) for root in roots]
+    assert opened.json['split'] == 'val' and opened.json['count'] == 2
+    override = client.post('/api/dataset-viewer/open', json={'config_path': str(path), 'split': 'all'})
+    assert override.status_code == 200 and override.json['count'] == 8
+    assert override.json['split'] == 'all'
+
+
+def test_api_inline_viewer_values_take_precedence_over_file_and_need_no_config(tmp_path):
+    cfg = DataConfig(history_steps=3, future_steps=2, dt=.04, stride=2, shard_windows=2)
+    root = tmp_path / 'processed' / 'sim' / 'road'
+    assembled_fixture(root, cfg, flat=True)
+    client = create_app(tmp_path / 'gui').test_client()
+    invalid = tmp_path / 'invalid.yaml'
+    invalid.write_text('this: [is broken yaml\n')
+    data = {'history_steps': 3, 'future_steps': 2, 'dt': .04}
+    for config_path in (None, str(tmp_path / 'nonexistent.yaml'), str(invalid)):
+        response = client.post('/api/dataset-viewer/open', json={'roots': [str(root)],
+            'config_path': config_path, 'data': data, 'split': 'test'})
+        assert response.status_code == 200, response.get_json()
+        assert response.json['count'] == 1 and response.json['split'] == 'test'
+        assert response.json['dt'] == .04
+    for bad in ({'dt': .04}, {**data, 'history_steps': 2, 'future_steps': 3}, {**data, 'dt': .02}):
+        response = client.post('/api/dataset-viewer/open', json={'roots': [str(root)], 'data': bad})
+        assert response.status_code == 400
+    unavailable = client.post('/api/dataset-viewer/open', json={'roots': [str(tmp_path / 'missing')], 'data': data})
+    assert unavailable.status_code == 400 and 'does not exist' in unavailable.json['error']
+
+
+def test_manual_relative_roots_resolve_the_same_for_save_and_inline_open(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    cfg = DataConfig(history_steps=3, future_steps=2, dt=.04, stride=2, shard_windows=2)
+    root = tmp_path / 'dataset'
+    assembled_fixture(root, cfg, flat=True)
+    data = {'history_steps': 3, 'future_steps': 2, 'dt': .04}
+    path = tmp_path / 'configs' / 'viewer.yaml'
+    saved = save_viewer_config(path, ['dataset'], data, 'train')
+    opened = DatasetViewer().open(['dataset'], str(path), 'train', data)
+    assert saved['roots'] == opened['roots'] == [str(root)]
+    assert load_viewer_config(path)['roots'] == saved['roots']
