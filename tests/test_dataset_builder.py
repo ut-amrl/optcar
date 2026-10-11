@@ -48,7 +48,9 @@ def test_build_preserves_actions_all_envs_and_restart(tmp_path,width):
     assert file.read_bytes()==original
     manifest=json.loads((tmp_path/'assembled/road/real/manifest.json').read_text())
     episodes=list(manifest['episodes'].values())
-    assert len(episodes)==2
+    assert len(episodes)==1
+    assert episodes[0]['raw']==str(file)
+    assert not (tmp_path/'assembled/road/real/raw').exists()
     first=np.fromfile(tmp_path/'assembled/road/real'/episodes[0]['shards'][0]['path'],np.float32).reshape(-1,7,42)
     np.testing.assert_allclose(first[0,:,39:41],rows[0,:7,13:15])
     np.testing.assert_allclose(first[0,3,13:20],[0,0,0,1,0,0,0],atol=1e-6)
@@ -200,7 +202,8 @@ def test_cpu_gpu_build_parity_progress_and_resume(tmp_path, shard_windows):
     assert cpu['new_windows']==gpu['new_windows']==12
     assert progress[0]['current']=='Inspecting selected bins'
     assert progress[-1]['completed']==progress[-1]['total']==12
-    assert any(0<p['completed']<12 for p in progress)
+    if shard_windows < 12:
+        assert any(0<p['completed']<12 for p in progress)
     assert any('Converting' in p['current'] for p in progress)
     assert any('Writing' in p['current'] for p in progress)
     assert all(p['device']=='cuda:0' for p in progress)
@@ -293,3 +296,39 @@ def test_separate_synthetic_collections_can_repeat_saved_episode_ids(tmp_path):
     assert build_dataset(tmp_path/'built',[source],cfg,device='cpu')['new_windows']==0
     # Selecting the same file through another source still fails.
     assert 'already selected' in inspect_sources([source,spec(next(iter(original)),terrain='grass',source='sim',split='auto')],cfg)['errors'][0]
+
+
+def test_resume_legacy_per_environment_build_without_rewriting(tmp_path):
+    from optcar.datagen.build_dataset import _episode_name
+    file, rows = raw_fixture(tmp_path/'inputs', environments=4)
+    cfg = DataConfig(history_steps=4, future_steps=3, stride=2, shard_windows=4)
+    sources = [spec(file)]
+    entries = inspect_sources(sources, cfg)['bins']
+    output = tmp_path/'built'
+    target = output/'road/real'
+    # A stopped older builder has committed its first two environments.
+    with DatasetWriter(target, cfg, 'real', 'road', {'inputs': entries, 'calibrations': []}) as writer:
+        for env in range(2):
+            writer.write_episode(_episode_name(entries[0], env), rows[env, :, :13], rows[env, :, 13:15],
+                                 'train', session=entries[0]['session'])
+    original = {p: p.read_bytes() for p in target.rglob('*.bin')}
+    result = build_dataset(output, sources, cfg, device='cpu')
+    assert result['new_windows'] == 6
+    assert all(p.read_bytes() == contents for p, contents in original.items())
+    assert len(FKDDataset(output, cfg)) == 12
+    manifest = json.loads((target/'manifest.json').read_text())
+    batched = manifest['episodes'][_episode_name(entries[0], 'batch')]
+    assert batched['metadata']['environments'] == [2, 3]
+    assert [s['shape'][0] for s in batched['shards']] == [4, 2]
+    assert build_dataset(output, sources, cfg, device='cpu')['new_windows'] == 0
+
+
+def test_cancel_during_batch_write_removes_uncommitted_windows_and_resumes(tmp_path):
+    file, _ = raw_fixture(tmp_path/'inputs', environments=4)
+    cfg = DataConfig(history_steps=4, future_steps=3, stride=2, shard_windows=4)
+    events = []
+    result = build_dataset(tmp_path/'built', [spec(file)], cfg, device='cpu', progress=events.append,
+                           cancelled=lambda: any(p['current'].startswith('Saved windows') for p in events))
+    assert result['completed'] == result['new_windows'] == 0
+    assert not list((tmp_path/'built').rglob('*.bin'))
+    assert build_dataset(tmp_path/'built', [spec(file)], cfg, device='cpu')['new_windows'] == 12

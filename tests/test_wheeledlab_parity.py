@@ -105,3 +105,50 @@ def test_batched_chunk_view_and_gpu_frames_match_wheeledlab(reference, device):
     torch.testing.assert_close(actual[...,39:41],expected[...,39:41],atol=0,rtol=0)
     assert torch.all(actual[...,41]==7)
     torch.testing.assert_close(raw,untouched,atol=0,rtol=0)
+
+
+@pytest.mark.parametrize('device', ['cpu', 'cuda:0'])
+def test_builder_files_match_wheeledlab_whole_file_processor_and_writer(tmp_path, reference, device):
+    """Exercise the user's 250/50/75 settings through the source's save routine."""
+    import time
+    from typing import Optional
+    from optcar.dataset import DataConfig, FKDDataset
+    from optcar.datagen.build_dataset import build_dataset
+    if device.startswith('cuda') and not torch.cuda.is_available():
+        pytest.skip('CUDA is unavailable')
+    rng = np.random.default_rng(80)
+    raw = torch.tensor(rng.normal(size=(32, 500, 15)), dtype=torch.float32)
+    raw[..., 3:7] = euler_to_quat_torch(torch.tensor(rng.normal(size=(32*500, 3)), dtype=torch.float32)).reshape(32, 500, 4)
+    raw[:, 1::2, 3:7] *= -1
+    raw[5, 20, 7] = float('nan')
+    input_dir = tmp_path/'raw'; input_dir.mkdir()
+    file = input_dir/'run.bin'; raw.numpy().tofile(file)
+    original = file.read_bytes()
+    cfg = DataConfig(history_steps=250, future_steps=50, stride=75, shard_windows=16)
+    source = {'path': str(file), 'terrain': 'road', 'source': 'sim', 'split': 'train',
+              'columns': 15, 'num_envs': 32, 'dt': .02}
+    result = build_dataset(tmp_path/'built', [source], cfg, device=device)
+    assert result['new_windows'] == 31*3
+    processor = SimpleNamespace(history_horizon=250, future_horizon=51, total_horizon=300, stride=75)
+    chunks = reference['generate_chunks_torch'](processor, raw[~torch.isnan(raw).any(dim=1).any(dim=1)].to(device))
+    expected = reference['_process_chunks_to_frames_torch'](processor, chunks).cpu()
+    expected = torch.cat((expected, torch.zeros((*expected.shape[:2], 1))), -1)
+    ns = {'torch': torch, 'np': np, 'Union': Union, 'Path': Path, 'time': time, 'Optional': Optional}
+    load_functions(ROOT/'wheeledlab_data/wheeledlab_data/data_processing/processing_sim.py', ['save_processed_batch'], ns)
+    reference_dir = tmp_path/'reference'; reference_dir.mkdir()
+    for index, values in enumerate(expected.split(cfg.shard_windows)):
+        ns['save_processed_batch'](SimpleNamespace(timing=False), values, reference_dir, index)
+    actual_files = sorted((tmp_path/'built').rglob('processed/data/*.bin'))
+    expected_files = sorted(reference_dir.glob('*.bin'))
+    assert len(actual_files) == len(expected_files) == 6
+    for actual, expected_file in zip(actual_files, expected_files):
+        if device == 'cpu':
+            assert actual.read_bytes() == expected_file.read_bytes()
+        else:
+            # The independently loaded source uses eager math; OptCar retains
+            # WheeledLab's scripted GPU math, whose fusion can round differently.
+            np.testing.assert_allclose(np.fromfile(actual, np.float32), np.fromfile(expected_file, np.float32),
+                                       atol=2e-6, rtol=2e-6)
+    assert not (tmp_path/'built/road/sim/raw').exists()
+    assert file.read_bytes() == original
+    assert len(FKDDataset(tmp_path/'built', cfg)) == 93

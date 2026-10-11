@@ -164,6 +164,81 @@ class DatasetWriter:
     def contains(self, episode):
         return episode in self.manifest["episodes"]
 
+    def write_window_batches(self, episode, batches, split, session, raw_path, raw_shape, metadata=None,
+                             progress=None):
+        """Save WheeledLab-style fixed-size window bins across environment batches.
+
+        Keep each input recording separate for its saved split and atomic resume.
+        Reference the original raw bin instead of copying every trajectory. The
+        carryover logic follows RawDatasetProcessor._ingest_processed.
+        """
+        safe_name(episode)
+        if split not in ("train", "val", "test"):
+            raise ValueError("split must be train, val, or test")
+        if session in self.session_splits and self.session_splits[session] != split:
+            raise ValueError("A session cannot appear in multiple dataset splits")
+        if self.contains(episode):
+            return 0
+        shards, written = [], []
+        count, carryover = 0, None
+        size = self.config.shard_windows
+
+        def save(values):
+            nonlocal count
+            filename = f"processed/data/{episode}_{count:08d}.bin"
+            path = self.root / filename
+            if path.exists() or path.with_suffix(".bin.tmp").exists():
+                raise ValueError(f"Output would replace an existing file: {path}")
+            written.append(path)
+            if progress:
+                progress(count, "Writing windows")
+            self._binary(filename, values.numpy())
+            shards.append({"path": filename, "shape": list(values.shape)})
+            count += len(values)
+            if progress:
+                progress(count, "Saved windows")
+
+        try:
+            for processed in batches:
+                processed = processed.detach().to(device="cpu", dtype=torch.float32)
+                if processed.ndim != 3 or tuple(processed.shape[1:]) != (self.config.window_steps, 42):
+                    raise ValueError("Expected processed windows [B,history+future,42]")
+                if carryover is not None:
+                    needed = size - len(carryover)
+                    if len(processed) < needed:
+                        extended = torch.empty((len(carryover) + len(processed), *processed.shape[1:]),
+                                               dtype=processed.dtype, device="cpu")
+                        extended[:len(carryover)].copy_(carryover)
+                        extended[len(carryover):].copy_(processed)
+                        carryover = extended
+                        continue
+                    to_save = torch.empty((size, *processed.shape[1:]), dtype=processed.dtype, device="cpu")
+                    to_save[:len(carryover)].copy_(carryover)
+                    to_save[len(carryover):].copy_(processed[:needed])
+                    save(to_save)
+                    processed = processed[needed:]
+                    carryover = None
+                while len(processed) >= size:
+                    save(processed[:size])
+                    processed = processed[size:]
+                if len(processed):
+                    carryover = processed
+            if carryover is not None:
+                save(carryover)
+        except BaseException:
+            # A cancelled/failed input is retried as a whole; earlier committed
+            # recordings and their windows stay available to the loader.
+            for path in written:
+                path.unlink(missing_ok=True)
+                path.with_suffix(".bin.tmp").unlink(missing_ok=True)
+            raise
+        self.manifest["episodes"][episode] = {"split": split, "session": session,
+            "raw": str(Path(raw_path).resolve()), "raw_shape": list(raw_shape), "shards": shards,
+            "windows": count, "metadata": metadata or {}}
+        self.session_splits[session] = split
+        self.dirty = True
+        return count
+
     def write_episode(self, episode, states, actions, split, session=None, vehicle_id=0, metadata=None,
                       device="cpu", packed_windows=None, raw_tensor=None, progress=None):
         safe_name(episode)

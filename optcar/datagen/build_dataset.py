@@ -139,6 +139,10 @@ def _episode_name(entry, environment):
     return "bin_" + hashlib.sha256(entry["path"].encode()).hexdigest()[:16] + f"_e{environment}"
 
 
+class _BuildCancelled(Exception):
+    pass
+
+
 def _check_output_files(root, grouped, data):
     """Check the files this build writes; unrelated files can share the folder."""
     for (terrain, kind), entries in grouped.items():
@@ -159,17 +163,13 @@ def _check_output_files(root, grouped, data):
                 if path.exists():
                     raise ValueError(f"Output would replace an existing file: {path}")
         for entry in entries:
-            for environment in range(entry["num_envs"]):
-                name = _episode_name(entry, environment)
-                if name in episodes:
-                    continue
-                windows = entry["estimated_windows"] // entry["num_envs"]
-                files = [target / "raw" / f"{name}.bin"]
-                files += [target / "processed/data" / f"{name}_{offset:08d}.bin"
-                          for offset in range(0, windows, data.shard_windows)]
-                for path in files:
-                    if path.exists() or path.with_suffix(".bin.tmp").exists():
-                        raise ValueError(f"Output would replace an existing file: {path}")
+            name = _episode_name(entry, "batch")
+            if name in episodes:
+                continue
+            for offset in range(0, entry["estimated_windows"], data.shard_windows):
+                path = target / "processed/data" / f"{name}_{offset:08d}.bin"
+                if path.exists() or path.with_suffix(".bin.tmp").exists():
+                    raise ValueError(f"Output would replace an existing file: {path}")
 
 
 def build_output(output, sources):
@@ -267,6 +267,12 @@ def build_dataset(output, sources, data=None, seed=42, fractions=(.8, .1, .1), p
                     if cancelled and cancelled():
                         return {"dataset": str(root), "completed": completed, "total": plan["files"], "new_windows": windows, "skipped": skipped}
                     report(f"Loading {entry['name']}")
+                    episode = _episode_name(entry, "batch")
+                    if writer.contains(episode):
+                        done_windows += entry["estimated_windows"]
+                        completed += 1
+                        report(f"Already saved {entry['name']}")
+                        continue
                     # Same whole-environment invalid-sample policy as WheeledLab.
                     valid = np.isfinite(rows).all(axis=(1, 2))
                     per_env = entry["estimated_windows"] // entry["num_envs"]
@@ -279,32 +285,45 @@ def build_dataset(output, sources, data=None, seed=42, fractions=(.8, .1, .1), p
                             done_windows += per_env
                         else:
                             pending.append(environment)
-                    # WheeledLab moves a batch to the device, unfolds windows there,
-                    # and keeps frame conversion in Torch until the final disk write.
-                    group_size = max(1, data.shard_windows // per_env)
-                    for start in range(0, len(pending), group_size):
+                    if pending and np.any(np.linalg.norm(rows[pending, :, 3:7], axis=-1) < 1e-6):
+                        raise ValueError(f"Zero quaternion in {entry['name']}")
+
+                    def processed_batches():
+                        # Same whole-file GPU flow as WheeledLab's
+                        # RawDatasetProcessor._process_single_file: move all
+                        # valid environments, unfold, convert frames, copy to CPU.
                         if cancelled and cancelled():
-                            return {"dataset": str(root), "completed": completed, "total": plan["files"], "new_windows": windows, "skipped": skipped}
-                        group = pending[start:start + group_size]
-                        report(f"Converting {entry['name']} · {len(group)} trajectories · {device}")
-                        batch = torch.from_numpy(np.array(rows[group, ..., :15], copy=True)).to(device)
-                        packed = None
-                        if per_env <= data.shard_windows:
-                            chunks = chunk_view(batch, data.window_steps, data.stride).contiguous().reshape(-1, data.window_steps, 15)
-                            with torch.no_grad():
-                                packed = pack_windows(chunks[..., :13], chunks[..., 13:15], data.history_steps,
-                                                      entry["vehicle_id"]).reshape(len(group), per_env, data.window_steps, 42)
-                            del chunks
-                        for index_in_group, environment in enumerate(group):
-                            def shard_progress(count, total, phase):
-                                report(f"{phase} · {entry['name']} · trajectory {environment + 1}/{entry['num_envs']}", count)
-                            windows += writer.write_episode(_episode_name(entry, environment), rows[environment, :, :13],
-                                rows[environment, :, 13:15], entry["split"], session=entry["session"],
-                                vehicle_id=entry["vehicle_id"], metadata={"input": entry["path"], "environment": environment},
-                                device=device, raw_tensor=batch[index_in_group],
-                                packed_windows=None if packed is None else packed[index_in_group], progress=shard_progress)
-                            done_windows += per_env
-                        del batch, packed
+                            raise _BuildCancelled()
+                        if not pending:
+                            return
+                        report(f"Converting {entry['name']} · {len(pending)} trajectories · {device}")
+                        batch = torch.from_numpy(np.array(rows[pending, ..., :15], copy=True)).to(device)
+                        chunks = chunk_view(batch, data.window_steps, data.stride).contiguous().reshape(
+                            -1, data.window_steps, 15)
+                        with torch.no_grad():
+                            packed = pack_windows(chunks[..., :13], chunks[..., 13:15], data.history_steps,
+                                                  entry["vehicle_id"]).cpu()
+                        del batch, chunks
+                        # WheeledLab also drops chunks with post-transform NaNs.
+                        post_nan = torch.isnan(packed).any(dim=1).any(dim=1)
+                        if post_nan.any():
+                            packed = packed[~post_nan]
+                        if cancelled and cancelled():
+                            raise _BuildCancelled()
+                        yield packed
+
+                    def shard_progress(count, phase):
+                        if cancelled and cancelled():
+                            raise _BuildCancelled()
+                        report(f"{phase} · {entry['name']}", count)
+                    try:
+                        saved = writer.write_window_batches(episode, processed_batches(), entry["split"],
+                            entry["session"], entry["path"], list(rows.shape),
+                            metadata={"input": entry["path"], "environments": pending}, progress=shard_progress)
+                    except _BuildCancelled:
+                        return {"dataset": str(root), "completed": completed, "total": plan["files"], "new_windows": windows, "skipped": skipped}
+                    windows += saved
+                    done_windows += len(pending) * per_env
                     writer.commit()
                     completed += 1
                     report(f"Saved {entry['name']}")
