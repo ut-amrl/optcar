@@ -61,6 +61,13 @@ def inspect_sources(sources, data=None, seed=42, fractions=(.8, .1, .1)):
                      "source_index": source_index, "source": kind, "terrain": terrain}
             try:
                 doc, known = _manifest_episode(file, cache)
+                # A build may live inside its inputs. Ignore its output bins on
+                # subsequent scans, while retaining original inputs under it.
+                if doc and "inputs" in doc.get("provenance", {}):
+                    if any(item["path"] == str(file) for item in doc["provenance"]["inputs"]):
+                        doc, known = None, None
+                    else:
+                        continue
                 # Existing generated collections may include processed shards and raw copies.
                 if doc and not known:
                     continue
@@ -125,6 +132,43 @@ def inspect_sources(sources, data=None, seed=42, fractions=(.8, .1, .1)):
             "config": asdict(data), "seed": seed, "fractions": list(fractions)}
 
 
+def _episode_name(entry, environment):
+    return "bin_" + hashlib.sha256(entry["path"].encode()).hexdigest()[:16] + f"_e{environment}"
+
+
+def _check_output_files(root, grouped, data):
+    """Check the files this build writes; unrelated files can share the folder."""
+    for (terrain, kind), entries in grouped.items():
+        target = root / terrain / kind
+        manifest = target / "manifest.json"
+        provenance = {"inputs": entries, "calibrations": [e["calibration"] for e in entries if e["calibration"]]}
+        episodes = {}
+        if manifest.exists():
+            doc = json.loads(manifest.read_text())
+            if (doc.get("config"), doc.get("source"), doc.get("terrain"), doc.get("provenance"),
+                doc.get("process_windows", True)) != (asdict(data), kind, terrain, provenance, True):
+                raise ValueError(f"Dataset files already exist at {target} with different inputs or settings")
+            episodes = doc["episodes"]
+        else:
+            for relative in ("metadata/schema.json", "metadata/dataset_config.py",
+                             "processed/metadata/schema.json", "processed/metadata/dataset_config.py"):
+                path = target / relative
+                if path.exists():
+                    raise ValueError(f"Output would replace an existing file: {path}")
+        for entry in entries:
+            for environment in range(entry["num_envs"]):
+                name = _episode_name(entry, environment)
+                if name in episodes:
+                    continue
+                windows = entry["estimated_windows"] // entry["num_envs"]
+                files = [target / "raw" / f"{name}.bin"]
+                files += [target / "processed/data" / f"{name}_{offset:08d}.bin"
+                          for offset in range(0, windows, data.shard_windows)]
+                for path in files:
+                    if path.exists() or path.with_suffix(".bin.tmp").exists():
+                        raise ValueError(f"Output would replace an existing file: {path}")
+
+
 def build_dataset(output, sources, data=None, seed=42, fractions=(.8, .1, .1), progress=None, cancelled=None):
     data = data or DataConfig()
     plan = inspect_sources(sources, data, seed, fractions)
@@ -135,15 +179,16 @@ def build_dataset(output, sources, data=None, seed=42, fractions=(.8, .1, .1), p
     root = Path(output).expanduser().resolve()
     if root.exists() and not root.is_dir():
         raise ValueError("Dataset output must be a folder")
+    # Selecting a parent of the raw collections creates one new output folder
+    # inside it, rather than placing build artifacts among those collections.
     for source in sources:
-        source_path = Path(source["path"]).expanduser().resolve()
-        base = source_path.parent if source_path.is_file() else source_path
-        if root.is_relative_to(base) or base.is_relative_to(root):
-            raise ValueError("Choose an output folder separate from the input folders")
+        path = Path(source["path"]).expanduser().resolve()
+        base = path.parent if path.is_file() else path
+        if base.is_relative_to(root):
+            root = root / "processed"
+            break
     identity = {"config": plan["config"], "bins": plan["bins"], "seed": seed, "fractions": list(fractions)}
     index = root / "dataset_build.json"
-    if root.exists() and not index.exists() and any(root.iterdir()):
-        raise ValueError("Output is not an empty folder or an existing matching dataset build")
     root.mkdir(parents=True, exist_ok=True)
     import fcntl
     with (root / ".builder.lock").open("a") as lock:
@@ -153,10 +198,11 @@ def build_dataset(output, sources, data=None, seed=42, fractions=(.8, .1, .1), p
             raise ValueError("Another dataset builder is writing this folder") from error
         if index.exists() and json.loads(index.read_text()) != identity:
             raise ValueError("Inputs or settings changed; choose a new output folder")
-        write_json(index, identity)
         grouped = defaultdict(list)
         for entry in plan["bins"]:
             grouped[entry["terrain"], entry["source"]].append(entry)
+        _check_output_files(root, grouped, data)
+        write_json(index, identity)
         completed, windows, started, skipped = 0, 0, time.monotonic(), []
         for (terrain, kind), entries in grouped.items():
             provenance = {"inputs": entries, "calibrations": [e["calibration"] for e in entries if e["calibration"]]}
@@ -171,7 +217,7 @@ def build_dataset(output, sources, data=None, seed=42, fractions=(.8, .1, .1), p
                         if not np.isfinite(rows).all():
                             skipped.append(f"{entry['name']} environment {environment}: nonfinite trajectory")
                             continue
-                        name = "bin_" + hashlib.sha256(entry["path"].encode()).hexdigest()[:16] + f"_e{environment}"
+                        name = _episode_name(entry, environment)
                         if writer.contains(name):
                             continue
                         windows += writer.write_episode(name, rows[:, :13], rows[:, 13:15],

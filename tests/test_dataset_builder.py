@@ -67,10 +67,57 @@ def test_matching_timestep_selection_duplicates_and_leakage(tmp_path):
     assert 'already selected' in inspect_sources([spec(folder),spec(file)],cfg)['errors'][0]
     other=tmp_path/'other';raw_fixture(other,dt=.04) # Same source bag identity.
     assert 'different splits' in inspect_sources([spec(folder),spec(other,split='test')],cfg)['errors'][0]
-    with pytest.raises(ValueError,match='separate'):
-        build_dataset(folder/'output',[spec(folder)],cfg)
     with pytest.raises(ValueError,match='summing'):
         inspect_sources([spec(folder)],cfg,fractions=[np.nan,0,0])
+
+
+def test_parent_of_three_raw_terrains_creates_processed_folder(tmp_path):
+    parent = tmp_path / 'corl26' / 'sim'
+    sources, originals = [], {}
+    for terrain in ('grass', 'road', 'mulch'):
+        file, _ = raw_fixture(parent / terrain, environments=2, source=f'/bags/{terrain}')
+        sources.append(spec(file.parent, terrain=terrain, source='sim'))
+        originals[file] = file.read_bytes()
+    cfg = DataConfig(history_steps=3, future_steps=2, stride=1)
+    result = build_dataset(parent, sources, cfg)
+    assert result['dataset'] == str(parent / 'processed')
+    assert result['completed'] == 3 and result['new_windows'] == 48
+    for terrain in ('grass', 'road', 'mulch'):
+        assert (parent / 'processed' / terrain / 'sim' / 'manifest.json').is_file()
+    assert all(file.read_bytes() == value for file, value in originals.items())
+    assert build_dataset(parent, sources, cfg)['new_windows'] == 0
+    assert len(FKDDataset(parent / 'processed', cfg)) == 48
+
+
+@pytest.mark.parametrize('location', ['same', 'nested', 'existing'])
+def test_shared_and_nonempty_folders_keep_inputs_and_resume(tmp_path, location):
+    file, _ = raw_fixture(tmp_path / 'inputs')
+    cfg = DataConfig(history_steps=3, future_steps=2, stride=1)
+    output = file.parent if location == 'same' else file.parent / 'built' if location == 'nested' else tmp_path / 'existing'
+    output.mkdir(parents=True, exist_ok=True)
+    note = output / 'notes.txt'
+    note.write_text('keep this file')
+    original = file.read_bytes()
+    result = build_dataset(output, [spec(file.parent)], cfg)
+    assert result['new_windows'] == 8
+    assert file.read_bytes() == original and note.read_text() == 'keep this file'
+    # Scanning the original folder again must exclude this build's raw copies
+    # and processed shards, including when they live within the input tree.
+    plan = inspect_sources([spec(file.parent)], cfg)
+    assert plan['files'] == 1 and not plan['errors']
+    assert build_dataset(output, [spec(file.parent)], cfg)['new_windows'] == 0
+
+
+def test_existing_output_file_is_preserved(tmp_path):
+    file, _ = raw_fixture(tmp_path / 'inputs')
+    output = tmp_path / 'output'
+    conflict = output / 'road' / 'real' / 'metadata' / 'schema.json'
+    conflict.parent.mkdir(parents=True)
+    conflict.write_text('existing user metadata')
+    with pytest.raises(ValueError, match='existing file'):
+        build_dataset(output, [spec(file)], DataConfig(history_steps=3, future_steps=2))
+    assert conflict.read_text() == 'existing user metadata'
+    assert not (output / 'dataset_build.json').exists()
 
 
 def test_raw_only_metadata_saved_split_and_wheeledlab_nan_policy(tmp_path):
