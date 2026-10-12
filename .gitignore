@@ -10,3 +10,4 @@ checkpoints/
 *.bin
 work/
 .pytest_cache/
+/tests/

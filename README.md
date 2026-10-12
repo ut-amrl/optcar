@@ -1,153 +1,44 @@
 # OptCar
 
-Vehicle dynamics data preparation, DBM calibration and FKD transformer training.
+Prepare vehicle datasets, calibrate a dynamic bicycle model (DBM), and train FKD delta-prediction transformers.
 
-Author: **Rwik Rana** · [rwikrana@gmail.com](mailto:rwikrana@gmail.com)
+**Rwik Rana** · [rwikrana@gmail.com](mailto:rwikrana@gmail.com) · [Paper](https://arxiv.org/abs/2607.13319)
 
-[Paper](https://arxiv.org/abs/2607.13319)
+## Quick start
 
-<p align="center"><img src="assets/images/optcar_title.png" alt="OptCar across mixed terrain" width="100%" /></p>
-<p align="center"><img src="assets/images/optcar_method.png" alt="Model architecture and fine-tuning" width="100%" /></p>
+### 1. Install and open the GUI
 
-## Setup
-
-From the repository root:
+Requires Conda. Skip cloning if you already have the repository.
 
 ```bash
+git clone git@github.com:ut-amrl/optcar.git
+cd optcar
 bash scripts/setup_env.sh
 conda activate optcar
 python3 optcar_gui.py
 ```
 
-Open http://127.0.0.1:5050. The setup script creates a Python 3.11 environment,
-installs `requirements.txt` and the editable package, checks imports and tmux,
-and verifies every visible NVIDIA GPU. The single requirements file installs
-Torch 2.11.0 with CUDA 12.8; CPU execution is also available. To update an existing
-environment, rerun the setup script or install manually:
+Open **http://127.0.0.1:5050**. Setup installs dependencies, tmux and CUDA-enabled PyTorch, then checks the available NVIDIA GPUs.
+
+### 2. Prepare the data
+
+Follow these GUI tabs; skip conversion or generation if you already have raw bins.
+
+1. **ROS2 bags → bins:** scan your bag folder, select recordings, check topics and timestep (`0.02 s` by default), choose an output folder and convert. Inspect results in **Raw bin viewer**.
+2. **DBM calibration:** select a raw bin, adjust parameters, then **Set & Rollout**. Save the YAML using your chosen folder and filename. Skip this if you already have a calibrated config.
+3. **Synthetic raw bins:** enter the DBM config path, run name, GPU, batch size and run count. Set command ranges and optional domain randomization, then generate. Results go under `<DBM config folder>/<run name>/`. Inspect them in **Visualize synthetic data**, choosing a batch index.
+4. **Dataset builder:** add real and/or synthetic raw folders, select bins and splits, and choose the output folder and device. For the supplied model, use **250 history samples, 50 future transitions and dt 0.02 s**. Set the stride; the default output size is **10,000 windows per bin**. Build the dataset.
+5. **Dataset viewer:** add processed split folders, set each folder's file/window limits (`-1` means all), and **Load dataset**. Inspect indices or shuffle. Enter a full config path, e.g. `<repo>/configs/corl26_data.py`, and **Save dconfig.py**. This creates the dataset config used below.
+
+Generation and build dashboards show progress and tmux attach commands. Those jobs continue after the GUI closes.
+
+### 3. Train
+
+In another terminal, from the repository root:
 
 ```bash
-python3 -m pip install -r requirements.txt -e '.[bags]'
-```
-
-GUI options include `--bag-root`, `--dataset-root`, `--host` and `--port`.
-Use `python3 optcar_gui.py --help` for details. Restart the GUI after updating
-packages or changing `CUDA_VISIBLE_DEVICES`.
-
-## Workflow
-
-1. **ROS2 bags → bins:** scan a folder, select bags, choose the output folder and
-   convert. Duration and topic names appear on each card. Default timestep is
-   0.02 s. The GUI and `scripts/bags_to_bins.sh` call the same converter.
-2. **Raw bin viewer:** browse folders and select a bin; play or scrub samples.
-   View world trajectory, commanded velocity, forward body velocity and steering.
-   Set action time ranges around the current sample and optional Y-axis limits.
-3. **DBM calibration:** select a raw bin, edit parameters and click **Set & Rollout**.
-   Defaults use the AlphaTruck (`len_f = len_r = 0.245 m`). Set both config folder
-   and filename before saving. Segment selection, saved segments, command delay,
-   and circle/figure-eight/Dubins/custom references are available. The separate
-   automatic bag fitter uses bounded least squares on selected parameters.
-4. **Synthetic raw bins:** load your DBM YAML, set a run name, timestep, duration,
-   batch size, commands and optional domain randomization. Output goes to
-   `<config folder>/<run name>/`. Each run saves one `[batch, steps, 15]` bin.
-   Each collection has its own tmux session, shown in the run dashboard.
-5. **Visualize synthetic data:** the raw viewer with a batch-index selector.
-   For a batch of 32, indices 0–31 select trajectories inside each bin.
-6. **Dataset builder:** select raw sources and recording splits, set history,
-   future transitions, stride, processing device, file workers and windows per
-   output bin. Jobs run in tmux and appear in the build dashboard.
-7. **Dataset viewer:** browse processed folders, copy/add their paths, and set
-   per-folder `num_runs` (files) and `num_trajectories` (windows) limits. `-1` selects
-   all. Load the dataset, inspect an index or shuffle the viewing order. Set a
-   full `.py` path to save a dataset config; loading that config fills the fields.
-8. **Transformer evaluation:** compare predictions from evaluation checkpoints
-   with recorded trajectories.
-
-Generation and building each use one selected GPU. Multiple jobs can use the
-same or different GPUs; a single job is not distributed across devices. Device
-indices follow Torch's visible ordering. Bag decoding runs on the CPU.
-
-## Raw bins and collection
-
-The converter uses bag timestamps and last-observation alignment over the shared
-range of the selected topics. Defaults are `/super_odometry/pose`,
-`/super_odometry/twist_wf`, `/cmd_vel`, dt 0.02 s and zero action shift. Positive
-action shift applies commands later. Optional body-frame input velocities are
-rotated to world coordinates. Conversion preserves input folder structure under
-`output/data/` and writes metadata beside it. The default output is the input
-folder's parent plus `bins/`.
-
-Raw float32 rows have 15 columns: position (3), quaternion **wxyz** (4), world
-linear/angular velocity (6), velocity/steering commands (2). Optional 17-column
-bins add the unshifted command pair. Auxiliary body twist is stored separately;
-the viewer uses it for forward velocity when available, otherwise rotates world
-velocity using the recorded quaternion. Metadata supplies timestep and batch
-count; standalone bins accept explicit layout settings.
-
-Synthetic rows log the state **after** applying that row's command. A batch of
-32, duration 10 s and dt 0.02 saves `32 × 500 × 15 × 4 = 960,000` bytes per run.
-Ten runs save ten bins containing 320 trajectories.
-
-Domain randomization accepts uniform `[min, max, uniform]` and normal
-`[mean, std, normal]` ranges for selected physical/control parameters. Parameters
-are shared within a batch; **Resample vehicle parameters each run** draws a new
-set per run. Per-trajectory velocity/steering biases are sampled independently.
-The base seed plus run index controls reproducibility; **Fixed control seed**
-repeats the same control sequence. The default Bézier stretching reaches both
-command bounds. Disable it to keep the sampled control points' original range.
-
-## Build and load datasets
-
-The builder loads input bins with 16 file threads by default. It processes all
-valid trajectories in each bin on the selected device, creates sliding windows,
-and transforms them into world, current-body and delta states. Invalid whole
-trajectories are excluded. Each window stays inside one trajectory; splits keep
-recordings together.
-
-The output layout is:
-
-```text
-<output>/processed/<sim or real>/<terrain>/<train, valid or test>/*.bin
-```
-
-If the selected output already names a separate `processed` directory, it is
-used directly. **Windows per output bin** defaults to 10,000. Windows carry
-across input files until a bin is full; only the last bin per source/terrain/split
-may be smaller. With history 250 and future 50 transitions, full output bins are
-`[10000, 300, 42]`: world (13), body (13), delta (13), commands (2), vehicle/file
-ID (1). Preview counts represent windows, not timesteps.
-
-The current sample is `history_steps - 1`. Body states use its full quaternion
-and position. Delta position/orientation uses the previous sample's frame;
-delta velocities are absolute velocities in each sample's own body frame.
-Quaternion sign continuity is maintained without forcing positive w.
-
-The dataset config specifies folders, file/window limits, dtype/device and loader
-options. File selection precedes trajectory limits. Without a selection seed,
-sorted files/windows are selected; a seed uses deterministic random subsets.
-The viewer's shuffle seed changes display order only. The config contains a
-`dataloader_config()` factory; viewer horizons are saved separately as a
-`viewer_data` literal because training reads horizons from the model config.
-GUI config loading parses literals without executing Python.
-
-## Train
-
-There is one training implementation and Python entrypoint: `optcar/train.py`.
-The `optcar train` command calls it as well. Configs are separate because they
-control different parts of the run:
-
-- `configs/corl26_model.py`: CTX/FiLM delta model, **321,219 trainable parameters**,
-  embedding size 64, 4 attention heads, 2 context layers and 2 decoder layers.
-- `configs/corl26_learning.py`: 500 epochs, batch size 4096, AdamW learning rate
-  0.001, weight decay 0.01, 1% warmup and cosine scheduling. Loss weights are
-  0.005 absolute-position MSE, 1.0 delta-position MSE and 0.3 delta-quaternion
-  geodesic loss. Gradient clipping is disabled.
-- Your dataset factory, exported from Dataset viewer, e.g. `configs/corl26_data.py`.
-  No machine-specific dataset mix is bundled.
-
-Run from the repository root in the installed environment:
-
-```bash
-python3 optcar/train.py \
+conda activate optcar
+MPLBACKEND=Agg python3 optcar/train.py \
   --dataset-config configs/corl26_data.py \
   --model-config configs/corl26_model.py \
   --learning-config configs/corl26_learning.py \
@@ -155,48 +46,96 @@ python3 optcar/train.py \
   --output checkpoints/corl26_delta
 ```
 
-Add `--check` to validate configs, selected data and model without training or
-writing outputs. Add `--checkpoint /path/to/initial.ckpt` to initialize weights
-for a new run. `--resume /path/to/run/last.ckpt` continues a run using its saved
-config factories. Reapply any original CLI device/seed/batch/epoch overrides;
-effective settings are recorded in `run_config.json`. Resume writes into the
-checkpoint's existing directory. Training config factories execute as Python,
-so use config files you trust.
+Use the dataset config saved above and a fresh output folder. Add `--check` to validate without training. The supplied model has **321,219 trainable parameters**.
 
-Training history has 250 samples; future has 50 **including the current sample**.
-The loader uses 299 rows from a 300-row processed window: history 0–249, future
-249–298. The first future delta has zero position and identity orientation. The
-future spans 49 transitions (0.98 s at dt 0.02). Existing bins need no rebuilding.
+### 4. Monitor and inspect results
 
-Main dataset folders are split 90%/10% into training and validation. Test folders
-are a separate validation loader evaluated each epoch; `--no-test` skips it.
-Default workers are 4 for training and 4 for validation, configurable with
-`--train-num-workers` and `--val-num-workers`. These are separate from builder
-workers and output-bin size. The entrypoint raises its open-file limit toward
-65,536 before loading bins.
+```bash
+tensorboard --logdir checkpoints/corl26_delta/lightning_logs
+```
 
-Lightning saves config factories, `initial.ckpt`, per-epoch checkpoints,
-`last.ckpt` and local TensorBoard logs. Add `--wandb --wandb-project-name optcar`
-after `wandb login` for WandB. Validation plots include positions, quaternions,
-commands and trajectory overlays; the dataset config controls plotting frequency.
-For headless servers, set `MPLBACKEND=Agg`.
+Open **http://127.0.0.1:6006** for metrics and validation plots. Checkpoints and copies of all three configs are saved in `checkpoints/corl26_delta/`. For WandB, run `wandb login` and add `--wandb` to the training command.
 
-The current loss implementation reports zero for `val/learn/loss_epoch`; this
-cleanup preserves that numerical behavior. The default `best` checkpoint does
-not reliably rank validation quality. Review component metrics and epoch/last
-checkpoints instead.
+## Reference
 
-## Repository
+<details>
+<summary>Configs, training and fine-tuning</summary>
 
-- `optcar/datagen/`: bag conversion, synthetic collection and dataset building.
-  `collection/` groups controllers, parameter definitions, randomization and saving.
-- `optcar/dataset.py`: binary windows, frames, manifests and file selection.
-- `optcar/fkd_dataloader.py`: training tensor slicing and loading.
-- `optcar/models/`: bicycle dynamics, calibration and FKD architectures.
-- `optcar/utils/math.py`: quaternion operations, continuity and frame transforms.
-- `optcar/gui/`: the local web interface and DBM tool.
+- **Dataset:** your exported `configs/corl26_data.py` defines folders, `num_runs` (bin files), `num_trajectories` (windows), selection seed and loader settings. A machine-specific dataset mix is not bundled.
+- **Model:** [`configs/corl26_model.py`](configs/corl26_model.py) defines the CTX/FiLM delta model: embedding 64, 4 attention heads, 2 context layers and 2 decoder layers.
+- **Learning:** [`configs/corl26_learning.py`](configs/corl26_learning.py) sets 500 epochs, batch size 4096, AdamW at `1e-3`, weight decay `0.01`, 1% warmup and cosine scheduling. Loss weights: absolute position `0.005`, delta position `1.0`, delta-quaternion geodesic `0.3`.
 
-Run tests with `python3 -m pytest -q`. Numerical regression fixtures are frozen
-independent outputs for frames, dynamics, controllers, loading and model
-forward/loss/gradients/scheduling. They require no external source checkout.
-Third-party attribution is retained in `THIRD_PARTY_NOTICES`.
+To fine-tune, add `--checkpoint /path/to/model.ckpt` to the training command; this initializes weights with a fresh optimizer. To resume an interrupted run:
+
+```bash
+python3 optcar/train.py --resume checkpoints/corl26_delta/last.ckpt --device cuda:0
+```
+
+Resume uses the saved configs and existing output folder. Reapply original CLI overrides for device, seed, batch size or epochs. Effective settings are recorded in `run_config.json`.
+
+Main dataset folders are split 90%/10% for training/validation. Separate test folders are evaluated every epoch; `--no-test` skips that loader. Training/validation default to 4 workers each (`--train-num-workers`, `--val-num-workers`), separate from the builder's 16 file-loading threads.
+
+The model's future horizon includes the current sample: it uses 299 rows of a 300-row window, with history 0–249 and future 249–298. At dt 0.02 s, that is 49 future transitions (0.98 s).
+
+**Current limitations:** `val/learn/loss_epoch` reports zero, so the default `best` checkpoint does not reliably rank validation quality; inspect component metrics and epoch/last checkpoints. The GUI's **Transformer evaluation** tab expects a separate checkpoint format and does not load these Lightning training checkpoints. Use training validation plots for this workflow.
+
+</details>
+
+<details>
+<summary>Bin formats, frames and output folders</summary>
+
+- **Raw bins:** float32 `[batch, steps, 15]` — position (3), quaternion **wxyz** (4), world linear/angular velocity (6), velocity/steering commands (2). Optional 17-column bins also retain unshifted commands. Body twist is stored in an auxiliary bin when available.
+- **Processed bins:** `[windows, history + future transitions, 42]` — world state (13), body state (13), delta state (13), commands (2), vehicle/file ID (1). The settings above produce up to `[10000, 300, 42]` per bin. Preview counts are windows, not timesteps.
+- **Body frame:** anchored at the final history sample's position and full quaternion. Delta position/orientation uses the previous sample's frame; delta velocities use each sample's own body frame. Quaternion sign continuity is preserved.
+
+```text
+<output>/processed/<sim or real>/<terrain>/<train, valid or test>/*.bin
+```
+
+An explicitly selected, separate `processed` directory is used directly. Windows never cross trajectories; recordings stay together during builder splits. Windows accumulate across input files; only the last bin per source/terrain/split may be smaller.
+
+File limits apply before window limits. A selection seed chooses reproducible subsets; otherwise selection follows sorted order. Viewer shuffle only changes display order. Training horizons come from the model config; viewer horizons are saved separately in the dataset config.
+
+</details>
+
+<details>
+<summary>Conversion, generation and devices</summary>
+
+Bag conversion defaults to `/super_odometry/pose`, `/super_odometry/twist_wf` and `/cmd_vel`, using bag timestamps and last-observation alignment at dt 0.02 s. Positive action shift delays commands. Output preserves input structure under `output/data/`; the default output is the bag folder's parent plus `bins/`.
+
+The terminal uses the same converter:
+
+```bash
+bash scripts/bags_to_bins.sh /path/to/bags \
+  --output /path/to/bins --config configs/raw_bags.yaml
+```
+
+Synthetic generation saves one batched bin per run. Batch size 32, duration 10 s and dt 0.02 s gives 32 trajectories of 500 samples (960,000 bytes). States are logged after applying each row's command.
+
+Domain randomization supports uniform and normal ranges. Vehicle parameters are shared within a batch; **Resample vehicle parameters each run** draws a new set per run. Trajectory command biases are sampled independently. The base seed plus run index controls reproducibility; **Fixed control seed** repeats commands. Disable Bézier stretching if commands should not always reach both bounds.
+
+Generation/build jobs each use one selected device; multiple jobs can use different GPUs. GPU indices follow PyTorch's visible ordering. Bag decoding uses CPU. The single `requirements.txt` installs Torch 2.11.0 with CUDA 12.8 and supports CPU execution. Rerun setup to update dependencies, then restart the GUI.
+
+Use `python3 optcar_gui.py --help` and `python3 optcar/train.py --help` for more options. Third-party attribution is in [`THIRD_PARTY_NOTICES`](THIRD_PARTY_NOTICES).
+
+</details>
+
+<details>
+<summary>Method diagrams</summary>
+
+![OptCar across mixed terrain](assets/images/optcar_title.png)
+
+![Model architecture and fine-tuning](assets/images/optcar_method.png)
+
+</details>
+
+## Citation
+
+```bibtex
+@article{rana2026adapting,
+  title   = {Adapting Generalist Vehicle Models for High-Speed MPC Across Terrains},
+  author  = {Rana, Rwik and Quattrociocchi, Jesse and Ellis, Christian and Tsoi, Nathan and Warnell, Garrett and Biswas, Joydeep},
+  journal = {Proceedings of The 10th Conference on Robot Learning},
+  year    = {2026}
+}
+```
