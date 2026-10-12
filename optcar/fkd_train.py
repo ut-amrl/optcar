@@ -189,6 +189,29 @@ def load_checkpoint_weights(path):
     return payload.get("state_dict", payload)
 
 
+def _raise_open_file_limit():
+    """Match WheeledLab's Docker nofile limit before opening dataset bins."""
+    try:
+        import resource
+    except ImportError:
+        return
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    reference_limit = 65_536
+    if soft >= reference_limit:
+        return
+    target = reference_limit if hard == resource.RLIM_INFINITY else min(reference_limit, hard)
+    if target <= soft:
+        return
+    try:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+    except (OSError, ValueError) as exc:
+        raise OSError(
+            f"Cannot raise the open-file limit from {soft} to {target}. "
+            f"Run `ulimit -n {reference_limit}` in the training shell or increase its hard limit."
+        ) from exc
+    print(f"Open-file limit: {soft} -> {target} (WheeledLab uses {reference_limit}).")
+
+
 def _checkpoint_and_configs(args):
     if args.config or args.architecture:
         raise ValueError(LEGACY_CONFIG_MESSAGE)
@@ -257,6 +280,7 @@ def _validate_sample(sample, model_config):
 
 def run_training(args):
     """Execute the reference Lightning training setup with local OptCar modules."""
+    _raise_open_file_limit()
     checkpoint, config_paths = _checkpoint_and_configs(args)
     if not 0 < args.train_split <= 1:
         raise ValueError("--train-split must lie in (0, 1].")

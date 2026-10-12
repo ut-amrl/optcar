@@ -2,45 +2,45 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>DBM Parameter Estimator</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DBM calibration</title>
 <script src="/dbm/static/plotly-2.35.2.min.js"></script>
 <link rel="stylesheet" href="/dbm/static/style.css" />
 <link rel="stylesheet" href="/static/bin_explorer.css" />
 </head>
 <body>
 <header>
-  <h1>DBM Parameter Estimator</h1>
-  <span class="muted">Raw bins · manual parameter tuning · recorded commands</span>
+  <h1>DBM calibration</h1>
 </header>
 
 <div id="dbm-library-layout">
 <aside id="dbm-browser" aria-label="DBM bin folder browser">
-  <span class="eyebrow">BIN LIBRARY</span><h2>Browse your raw bins.</h2>
+  <h2>Raw bins</h2>
   <label for="dataset_path">Folder or .bin file</label>
     <input type="text" id="dataset_path"
-           placeholder="path to dataset root (contains data/*.bin) or to a .bin"
+           placeholder="/path/to/raw/bins or file.bin"
            value="{{ initial_path }}" />
-  <button id="btn_inspect">Open folder ↗</button>
+  <button id="btn_inspect">Open folder</button>
   <label for="dbm-bin-filter">Filter files</label><input id="dbm-bin-filter" type="text" placeholder="Folder or bin name" />
   <div class="browser-heading"><span id="dbm-bin-count" class="muted">No folder open</span><button id="dbm-bin-collapse" class="secondary" type="button">Collapse folders</button></div>
   <div id="dbm-bin-tree" class="bin-tree" aria-label="DBM bin files">Open a folder to browse its bins.</div>
   <div id="inspect_status" class="status" role="status"></div>
 </aside>
 <main id="dbm-library-main">
-<div class="browser-heading"><span id="dbm-recording" class="muted">Choose a raw bin from the folder browser.</span><button id="dbm-toggle-browser" class="secondary" type="button" aria-expanded="true" aria-controls="dbm-browser">Hide browser</button></div>
+<div class="browser-heading"><span id="dbm-recording" class="muted">No bin selected</span><button id="dbm-toggle-browser" class="secondary" type="button" aria-expanded="true" aria-controls="dbm-browser">Hide browser</button></div>
 <div id="load_status" class="status" role="status"></div>
 <div id="bag_page">
 <section class="card hidden" id="view_card">
     <div class="tabs">
-    <button class="tab active" id="tab_traj" type="button">Bag XY</button>
-    <button class="tab" id="tab_dbm" type="button">DBM Window</button>
+    <button class="tab active" id="tab_traj" type="button">XY trajectory</button>
+    <button class="tab" id="tab_dbm" type="button">DBM window</button>
   </div>
 
   <div id="traj_tab_panel" class="tab-panel">
     <div class="traj-layout">
       <aside class="traj-sidebar">
-        <div class="params-title">Reference Trajectory</div>
-        <label>Type</label>
+        <div class="params-title">Reference trajectory</div>
+        <label for="ref_traj_select">Type</label>
         <select id="ref_traj_select"></select>
         <label for="ref_traj_color">Color</label>
         <input type="color" id="ref_traj_color" value="#f59e0b" />
@@ -60,8 +60,8 @@
         </div>
         <div class="row">
           <span id="traj_info" class="muted"></span>
-          <button id="btn_save_segment" type="button">Save Segment</button>
-          <button id="btn_load_segment" type="button" class="secondary">Load Saved</button>
+          <button id="btn_save_segment" type="button">Save segment</button>
+          <button id="btn_load_segment" type="button" class="secondary">Load saved</button>
           <span id="segment_status" class="status"></span>
         </div>
         <div id="bag_xy_plot" class="plot whole-xy"></div>
@@ -79,7 +79,7 @@
   <div class="row">
     <label for="horizon">Horizon (steps)</label>
         <input type="number" id="horizon" value="100" min="1" />
-    <label>cmd_vel shift (s) <span class="muted">+ = delay cmd</span></label>
+    <label for="cmd_shift">cmd_vel shift (s) <span class="muted">+ = delay cmd</span></label>
     <input type="number" id="cmd_shift" value="0.0" step="0.005" style="width:90px" />
     <button id="btn_refresh">Refresh</button>
   </div>
@@ -90,7 +90,7 @@
       <div id="steer_plot" class="plot"></div>
     </div>
     <div class="params-panel">
-      <div class="params-title">DBM Parameters</div>
+      <div class="params-title">DBM parameters</div>
       <div class="dbm-config-location">
         <label>DBM config folder<input id="preset_folder" placeholder="/full/path/to/configs" type="text" spellcheck="false"></label>
         <label>DBM config filename<input id="preset_filename" placeholder="mulch.yaml" type="text" spellcheck="false"></label>
@@ -125,7 +125,7 @@
         <label for="p_max_wheel">max_wheel (m/s)</label>
         <input type="number" id="p_max_wheel" value="{{ params.max_wheel_velocity }}" step="0.5" />
       </div>
-      <button id="btn_rollout" style="width:100%; margin-top:12px;">Set &amp; Rollout</button>
+      <button id="btn_rollout" style="width:100%; margin-top:12px;">Apply &amp; rollout</button>
       <div id="rollout_status" class="status"></div>
     </div>
   </div>

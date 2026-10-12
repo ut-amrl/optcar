@@ -57,7 +57,7 @@ async function refreshGenerationRuns(){
     const {runs}=await api('/api/generation/runs'),container=$('generation-jobs');
     const active=runs.filter(generationRunActive).length,complete=runs.filter(job=>job.status==='complete').length;
     $('generation-runs-summary').textContent=`${active} active · ${complete} complete · ${runs.length} total`;
-    if(!runs.length){container.textContent='No tmux collections yet.';return;}
+    if(!runs.length){container.textContent='No generation runs.';return;}
     if(!generationRunCards.size)container.replaceChildren();
     let changed=false,position=0;
     for(const job of runs){

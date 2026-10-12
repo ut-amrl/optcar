@@ -2,7 +2,7 @@
 // Stored FKD states and frame math are unchanged. Selection follows WheeledLab.
 const datasetViewerState={dataset:null,sample:null,cursor:0,request:0,busy:false,configBusy:false,options:{},rows:{dataset:[],test:[]},browserRevision:0};
 const datasetViewerStorage='optcar.dataset-viewer.settings';
-const datasetViewerColors={history:'#6bd1d6',future:'#eab58a',anchor:'#c2ed80',cursor:'#e1e9eb'};
+const datasetViewerColors={history:'#80cbd3',future:'#e7b17a',anchor:'#8bc99b',cursor:'#edf0f3'};
 function datasetViewerStatus(text,error=false){$('dataset-viewer-status').textContent=text;$('dataset-viewer-status').classList.toggle('error',error);}
 function datasetViewerData(){return {history_steps:Number($('dataset-viewer-history').value),future_steps:Number($('dataset-viewer-future').value),dt:Number($('dataset-viewer-dt').value)};}
 function datasetViewerSettings(){
@@ -43,8 +43,8 @@ function datasetViewerControls(){
 function invalidateDatasetViewer(){
   datasetViewerState.request++;datasetViewerState.dataset=null;datasetViewerState.sample=null;datasetViewerState.busy=false;
   $('dataset-viewer-index').value=0;$('dataset-viewer-metadata').hidden=true;$('dataset-viewer-selection').replaceChildren();
-  $('dataset-viewer-title').textContent='See the saved training data.';
-  $('dataset-viewer-path').textContent='Settings changed. Load the dataset to inspect its trajectories.';
+  $('dataset-viewer-title').textContent='Dataset viewer';
+  $('dataset-viewer-path').textContent='Settings changed. Load the dataset to apply them.';
   saveDatasetViewerSettings();datasetViewerControls();drawDatasetViewer();datasetViewerStatus('Settings changed. Click Load dataset.');
 }
 function renderDatasetViewerRows(){
@@ -109,7 +109,7 @@ async function loadDatasetViewerConfig(path=$('dataset-viewer-config').value.tri
     if(scopeRoot){datasetViewerState.rows.dataset=[{path:scopeRoot,num_runs:-1,num_trajectories:-1}];renderDatasetViewerRows();}
     if(config.data)for(const [id,key]of [['dataset-viewer-history','history_steps'],['dataset-viewer-future','future_steps'],['dataset-viewer-dt','dt']])$(id).value=config.data[key];
     $('dataset-viewer-split').value=config.split;$('dataset-viewer-set').value='dataset';$('dataset-viewer-config').value=config.config_path;
-    invalidateDatasetViewer();datasetViewerStatus(config.dl_config&&!config.data?'Config loaded. Set history/future from your model config, then Load dataset.':'Config loaded. Edit the folder mix or click Load dataset.');return true;
+    invalidateDatasetViewer();datasetViewerStatus(config.dl_config&&!config.data?'Config loaded. Set history/future from your model config, then Load dataset.':'Config loaded. Ready to load dataset.');return true;
   }catch(error){if(revision===datasetViewerState.request&&$('dataset-viewer-config').value.trim()===path)throw error;return false;}
   finally{datasetViewerState.configBusy=false;datasetViewerControls();}
 }
@@ -170,7 +170,7 @@ async function browseDatasetViewerFolder(path=$('dataset-browser-root').value.tr
   const result=await browse(path);if(revision!==datasetViewerState.browserRevision)return;
   $('dataset-browser-root').value=result.path;saveDatasetViewerSettings();const tree=$('dataset-browser-tree');tree.replaceChildren();
   const folder=await OptCarBinExplorer.directory({path:result.path,browse,onCopy:copyDatasetViewerPath,onAdd:addDatasetViewerFolder,isCurrent:()=>revision===datasetViewerState.browserRevision});
-  tree.append(folder);folder.open=true;$('dataset-browser-status').textContent='Expand folders. Copy their path or add them to the selected dataset list.';
+  tree.append(folder);folder.open=true;$('dataset-browser-status').textContent='Choose a folder to copy or add.';
 }
 async function copyDatasetViewerPath(path){try{await navigator.clipboard.writeText(path);$('dataset-browser-status').textContent=`Copied: ${path}`;}catch{$('dataset-browser-status').textContent=`Path: ${path}`;}}
 function datasetViewerMarker(ctx,point,color,radius){
@@ -179,20 +179,20 @@ function datasetViewerMarker(ctx,point,color,radius){
 function datasetViewerTrajectory(id,rows,yaw){
   const {ctx,w,h}=canvas(id);if(w<1||h<1)return;
   const sample=datasetViewerState.sample;
-  if(!sample||!rows?.length){ctx.font='11px system-ui';ctx.fillStyle='#80919d';ctx.textAlign='center';ctx.fillText('Load a dataset to see a trajectory.',w/2,h/2);ctx.textAlign='left';return;}
-  const left=44,right=w-18,top=20,bottom=h-30;
+  if(!sample||!rows?.length){ctx.font='14px system-ui, sans-serif';ctx.fillStyle='#b0bac5';ctx.textAlign='center';ctx.fillText('No dataset loaded',w/2,h/2);ctx.textAlign='left';return;}
+  const left=60,right=w-30,top=20,bottom=h-32;
   let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
   for(const row of rows){if(!Number.isFinite(row[0])||!Number.isFinite(row[1]))continue;minX=Math.min(minX,row[0]);maxX=Math.max(maxX,row[0]);minY=Math.min(minY,row[1]);maxY=Math.max(maxY,row[1]);}
   if(!Number.isFinite(minX))return;
   const spanX=Math.max(.2,maxX-minX)*1.15,spanY=Math.max(.2,maxY-minY)*1.15;
   const scale=Math.min((right-left)/spanX,(bottom-top)/spanY),cx=(minX+maxX)/2,cy=(minY+maxY)/2;
   const map=row=>[(left+right)/2+(row[0]-cx)*scale,(top+bottom)/2-(row[1]-cy)*scale];
-  ctx.font='9px monospace';ctx.fillStyle='#748995';ctx.strokeStyle='#25333c';
+  ctx.font='12px system-ui, sans-serif';ctx.fillStyle='#b0bac5';ctx.strokeStyle='#323840';
   for(let tick=0;tick<=4;tick++){
     const x=left+(right-left)*tick/4,y=top+(bottom-top)*tick/4;
     ctx.beginPath();ctx.moveTo(x,top);ctx.lineTo(x,bottom);ctx.moveTo(left,y);ctx.lineTo(right,y);ctx.stroke();
-    ctx.fillText((cx+(x-(left+right)/2)/scale).toFixed(1),x-10,h-10);
-    ctx.fillText((cy-(y-(top+bottom)/2)/scale).toFixed(1),3,y+3);
+    ctx.textAlign='center';ctx.fillText((cx+(x-(left+right)/2)/scale).toFixed(1),x,h-10);
+    ctx.textAlign='right';ctx.fillText((cy-(y-(top+bottom)/2)/scale).toFixed(1),left-8,y+4);ctx.textAlign='left';
   }
   const anchor=sample.current_step;
   line(ctx,rows.slice(0,anchor+1).map(map),datasetViewerColors.history,2);
@@ -204,21 +204,24 @@ function datasetViewerTrajectory(id,rows,yaw){
 }
 function datasetViewerSignal(id,series){
   const {ctx,w,h}=canvas(id),sample=datasetViewerState.sample;if(!sample||w<1||h<1)return;
-  const times=sample.times,left=42,right=w-15,top=15,bottom=h-27;
+  const times=sample.times,left=60,right=w-20,top=15,bottom=h-30;
   let low=0,high=0;
   for(const values of series)for(const value of values){if(Number.isFinite(value)){low=Math.min(low,value);high=Math.max(high,value);}}
   const margin=Math.max(.1,high-low)*.12;low-=margin;high+=margin;
   const start=times[0],duration=Math.max(.000001,times[times.length-1]-start);
   const map=(index,value)=>[left+(times[index]-start)/duration*(right-left),bottom-(value-low)/(high-low)*(bottom-top)];
-  ctx.font='9px monospace';ctx.fillStyle='#748995';
+  ctx.font='12px system-ui, sans-serif';ctx.fillStyle='#b0bac5';
   for(let tick=0;tick<=3;tick++){
-    const value=low+(high-low)*tick/3,y=map(0,value)[1];ctx.strokeStyle='#25333c';ctx.beginPath();ctx.moveTo(left,y);ctx.lineTo(right,y);ctx.stroke();ctx.fillText(value.toFixed(2),3,y+3);
+    const value=low+(high-low)*tick/3,y=map(0,value)[1];ctx.strokeStyle='#323840';ctx.beginPath();ctx.moveTo(left,y);ctx.lineTo(right,y);ctx.stroke();ctx.textAlign='right';ctx.fillText(value.toFixed(2),left-8,y+4);ctx.textAlign='left';
   }
   series.forEach((values,index)=>line(ctx,values.map((value,step)=>map(step,value)),index===0?datasetViewerColors.future:datasetViewerColors.history,1.5));
   for(const [step,color,dash]of [[sample.current_step,datasetViewerColors.anchor,[4,3]],[datasetViewerState.cursor,datasetViewerColors.cursor,[]]]){
     const x=map(step,low)[0];ctx.strokeStyle=color;ctx.setLineDash(dash);ctx.beginPath();ctx.moveTo(x,top);ctx.lineTo(x,bottom);ctx.stroke();
   }
-  ctx.setLineDash([]);ctx.fillText(`${start.toFixed(2)}s`,left,h-8);ctx.fillText('0s',map(sample.current_step,0)[0]-5,h-8);ctx.fillText(`${times[times.length-1].toFixed(2)}s`,right-38,h-8);
+  ctx.setLineDash([]);
+  const startLabel=`${start.toFixed(2)}s`,endLabel=`${times[times.length-1].toFixed(2)}s`,anchorX=map(sample.current_step,0)[0];
+  ctx.fillText(startLabel,left,h-8);ctx.textAlign='right';ctx.fillText(endLabel,right,h-8);ctx.textAlign='left';
+  if(anchorX>left+ctx.measureText(startLabel).width+16&&anchorX<right-ctx.measureText(endLabel).width-16){ctx.textAlign='center';ctx.fillText('0s',anchorX,h-8);ctx.textAlign='left';}
 }
 function drawDatasetViewer(){
   if($('dataset-viewer-workspace').hidden)return;

@@ -1,9 +1,9 @@
 // Ported from WheeledLab dbm_estimator/static/app.js. Plot styling follows OptCar.
 const originalPlotlyReact = Plotly.react.bind(Plotly);
 Plotly.react = (target, traces, layout, config) => originalPlotlyReact(target, traces, {
-  ...layout, paper_bgcolor:'#111a20', plot_bgcolor:'#111a20', font:{color:'#a8bac4',size:10}, title:{text:typeof layout.title==='string'?layout.title:layout.title?.text,font:{size:12}},
-  xaxis:{...layout.xaxis,gridcolor:'#25333c',zerolinecolor:'#4c6471'},
-  yaxis:{...layout.yaxis,gridcolor:'#25333c',zerolinecolor:'#4c6471'},
+  ...layout, paper_bgcolor:'#1c2025', plot_bgcolor:'#1c2025', font:{family:'system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif',color:'#b0bac5',size:12}, title:{text:typeof layout.title==='string'?layout.title:layout.title?.text,font:{size:14,color:'#edf0f3'}},
+  xaxis:{...layout.xaxis,gridcolor:'#343c46',zerolinecolor:'#667483',automargin:true},
+  yaxis:{...layout.yaxis,gridcolor:'#343c46',zerolinecolor:'#667483',automargin:true},
 }, config);
 const $ = (id) => document.getElementById(id);
 const AGG_LIMITS_CACHE_KEY = "optcar.dbm.aggregate_limits";
@@ -365,7 +365,7 @@ function addAggregateRow(yamlPath = "", legend = "", color = undefined, visible 
 }
 
 function nextAggregateColor() {
-  const palette = ["#2563eb", "#f97316", "#16a34a", "#dc2626", "#7c3aed", "#0891b2", "#ca8a04"];
+  const palette = ["#2563eb", "#f97316", "#16a34a", "#f29a90", "#bca0df", "#0891b2", "#ca8a04"];
   return palette[document.querySelectorAll(".aggregate-row").length % palette.length];
 }
 
@@ -731,7 +731,7 @@ function drawBagXY(r) {
       x: r.x,
       y: r.y,
       mode: "lines",
-      line: {color: "#6bd1d6", width: 2},
+      line: {color: "#80cbd3", width: 2},
       name: "selected trajectory",
     },
   ];
@@ -739,12 +739,12 @@ function drawBagXY(r) {
     traces.push(
       {
         x: [r.x[0]], y: [r.y[0]], mode: "markers",
-        marker: {size: 10, color: "#10b981"},
+        marker: {size: 10, color: "#8bc99b"},
         name: "start",
       },
       {
         x: [r.x[r.x.length - 1]], y: [r.y[r.y.length - 1]], mode: "markers",
-        marker: {size: 10, color: "#ef4444"},
+        marker: {size: 10, color: "#f29a90"},
         name: "end",
       },
     );
@@ -893,19 +893,19 @@ function drawXY(r) {
     {
       x: r.by, y: r.bx,
       mode: "lines+markers",
-      line: {color: "#6bd1d6", width: 2},
-      marker: {size: 3, color: "#6bd1d6"},
+      line: {color: "#80cbd3", width: 2},
+      marker: {size: 3, color: "#80cbd3"},
       name: "measured",
     },
     {
       x: [0], y: [0], mode: "markers",
-      marker: {size: 12, color: "#10b981"},
+      marker: {size: 12, color: "#8bc99b"},
       showlegend: false,
     },
     {
       // heading arrow: +x_body (forward) maps to +plot_y (up)
       x: [0, 0], y: [0, 0.3], mode: "lines",
-      line: {color: "#10b981", width: 3},
+      line: {color: "#8bc99b", width: 3},
       showlegend: false,
     },
   ];
@@ -914,7 +914,7 @@ function drawXY(r) {
     traces.push({
       x: state.rollout.by, y: state.rollout.bx,
       mode: "lines",
-      line: {color: "#c2ed80", width: 2, dash: "dash"},
+      line: {color: "#e7b17a", width: 2, dash: "dash"},
       name: "DBM rollout",
     });
   }
@@ -927,7 +927,7 @@ function drawXY(r) {
     dragmode: "pan",
     hovermode: "closest",
     showlegend: !!state.rollout,
-    legend: {orientation: "h", y: -0.16, yanchor:"top", font:{size:9}},
+    legend: {orientation: "h", y: -0.16, yanchor:"top", font:{size:12}},
   };
   Plotly.react("xy_plot", traces, layout,
     {scrollZoom: true, displaylogo: false, responsive: true});
@@ -939,11 +939,11 @@ function drawVel(r) {
     xaxis: {title: "Time (s)"},
     yaxis: {title: "m/s"},
     margin: {t: 40, r: 10, b: 70, l: 50},
-    legend: {orientation: "h", y: -0.45, yanchor:"top", font:{size:9}},
+    legend: {orientation: "h", y: -0.45, yanchor:"top", font:{size:12}},
   };
   Plotly.react("vel_plot", [
-    {x: r.t, y: r.cmd_v, mode: "lines", name: "Command", line: {color: "#dc2626"}},
-    {x: r.t, y: r.v_long, mode: "lines", name: "Body x", line: {color: "#6bd1d6", dash: "dot"}},
+    {x: r.t, y: r.cmd_v, mode: "lines", name: "Command", line: {color: "#f29a90"}},
+    {x: r.t, y: r.v_long, mode: "lines", name: "Body x", line: {color: "#80cbd3", dash: "dot"}},
   ], layout, {scrollZoom: true, displaylogo: false, responsive: true});
 }
 
@@ -953,11 +953,11 @@ function drawSteer(r) {
     xaxis: {title: "Time (s)"},
     yaxis: {title: "rad or rad/s"},
     margin: {t: 40, r: 10, b: 70, l: 50},
-    legend: {orientation: "h", y: -0.45, yanchor:"top", font:{size:9}},
+    legend: {orientation: "h", y: -0.45, yanchor:"top", font:{size:12}},
   };
   Plotly.react("steer_plot", [
-    {x: r.t, y: r.cmd_s, mode: "lines", name: "Steering", line: {color: "#7c3aed"}},
-    {x: r.t, y: r.yaw_rate, mode: "lines", name: "Yaw rate", line: {color: "#6bd1d6", dash: "dot"}},
+    {x: r.t, y: r.cmd_s, mode: "lines", name: "Steering", line: {color: "#bca0df"}},
+    {x: r.t, y: r.yaw_rate, mode: "lines", name: "Yaw rate", line: {color: "#80cbd3", dash: "dot"}},
   ], layout, {scrollZoom: true, displaylogo: false, responsive: true});
 }
 

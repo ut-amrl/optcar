@@ -26,6 +26,7 @@ def dataset_factory(tmp_path):
 @pytest.fixture
 def mocked_runtime(monkeypatch):
     calls = SimpleNamespace(models=[], datasets=[], trainers=[], normalization=0, loggers=[])
+    monkeypatch.setattr(fkd_train, "_raise_open_file_limit", lambda: None)
 
     class SelectedDataset(Dataset):
         def __init__(self, dl_config, future_horizon_steps, history_horizon_steps, no_map, is_test_set):
@@ -98,6 +99,16 @@ def test_reference_split_and_ordinary_sampler():
     assert isinstance(val.sampler, SequentialSampler)
     assert not train.pin_memory and val.pin_memory
     assert sorted(list(train.sampler)) == list(range(len(actual[0])))
+
+
+def test_training_raises_open_file_limit_to_reference_budget(monkeypatch):
+    import resource
+
+    changes = []
+    monkeypatch.setattr(resource, "getrlimit", lambda _: (1024, 1_048_576))
+    monkeypatch.setattr(resource, "setrlimit", lambda which, limits: changes.append((which, limits)))
+    fkd_train._raise_open_file_limit()
+    assert changes == [(resource.RLIMIT_NOFILE, (65_536, 1_048_576))]
 
 
 def test_actual_recipe_setup_uses_reference_effects_without_training(tmp_path, mocked_runtime):

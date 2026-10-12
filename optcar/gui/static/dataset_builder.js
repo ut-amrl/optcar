@@ -19,7 +19,7 @@ function invalidateBuilder() {
   const dt=Number($('builder-dt').value),h=Number($('history-steps').value),f=Number($('future-steps').value);
   $('builder-window-hint').textContent=`${h+f} samples per window · ${(Math.max(0,h-1)*dt).toFixed(2)}s observed history · ${(f*dt).toFixed(2)}s future`;
   const batch=Number($('builder-shard-windows').value);
-  $('builder-output-shape-hint').textContent=`Processed shape: [${batch.toLocaleString()}, ${h+f}, 42]. The final bin for each terrain/source/split may be smaller. Synthetic batch size sets trajectories per raw bin.`;
+  $('builder-output-shape-hint').textContent=`Bin shape: [${batch.toLocaleString()}, ${h+f}, 42] · Final bins may contain fewer windows.`;
   updateBuilderOutputPreview();
 }
 function builderRequest(sources=builderState.sources, selected=true) {
@@ -54,7 +54,7 @@ function addDatasetSource(path='', terrain='road', kind='real') {
   source.path=builderInput(path);source.path.placeholder='/path/to/raw/bins';
   source.terrain=builderInput(terrain);
   source.split=builderSelect([['auto','Automatic'],['train','Training'],['val','Validation'],['test','Test']]);
-  source.vehicle=builderInput('','number');source.vehicle.placeholder='File index (WheeledLab)';source.vehicle.min='0';source.vehicle.step='1';
+  source.vehicle=builderInput('','number');source.vehicle.placeholder='File index';source.vehicle.min='0';source.vehicle.step='1';
   source.dt=builderInput('','number');source.dt.placeholder='Metadata';source.dt.step='any';
   source.columns=builderSelect([['','Metadata / detect'],['15','15 columns'],['17','17 columns']]);
   source.envs=builderInput('','number');source.envs.placeholder='Metadata / 1';source.envs.min='1';
@@ -74,7 +74,7 @@ function addDatasetSource(path='', terrain='road', kind='real') {
   buttons.append(scan,all,clear,collapse);card.append(buttons);
   source.filter=builderInput();source.filter.placeholder='Filter folders or bins';source.filter.setAttribute('aria-label','Filter source bins');
   source.tree=document.createElement('div');source.tree.className='bin-tree builder-tree';
-  source.info=document.createElement('p');source.info.className='hint';source.info.textContent='Scan to browse and select recordings.';
+  source.info=document.createElement('p');source.info.className='hint';source.info.textContent='No bins scanned.';
   card.append(source.filter,source.info,source.tree);
   function render() {
     OptCarBinExplorer.render({tree:source.tree,entries:source.bins,filter:source.filter.value,opened:source.opened,selected:source.selected,scrollToSelection:false,
@@ -93,7 +93,7 @@ function addDatasetSource(path='', terrain='road', kind='real') {
       if(revision!==source.scanRevision)return;
       source.bins=result.bins;source.selected=new Set(result.bins.filter(e=>!e.error).map(e=>e.path));render();
       const unavailable=result.bins.filter(e=>e.error);
-      builderStatus(unavailable.length?`Found ${result.bins.length} bins · ${unavailable.length} unavailable. ${unavailable[0].name}: ${unavailable[0].error}`:`Found ${result.bins.length} bins. Choose recordings, then review the dataset.`,Boolean(unavailable.length));
+      builderStatus(unavailable.length?`Found ${result.bins.length} bins · ${unavailable.length} unavailable. ${unavailable[0].name}: ${unavailable[0].error}`:`Found ${result.bins.length} bins.`,Boolean(unavailable.length));
     }catch(error){builderStatus(error.message,true);}finally{scan.disabled=false;}
   };
   builderState.sources.push(source);$('builder-sources').append(card);invalidateBuilder();return source;
@@ -105,7 +105,7 @@ function displayBuilderPlan(plan) {
     const box=document.createElement('div'),label=document.createElement('span'),count=document.createElement('strong');
     label.textContent=title;count.textContent=value.toLocaleString();box.append(label,count);metrics.append(box);
   }
-  const explanation=document.createElement('p');explanation.className='hint';explanation.textContent=`Each window has ${plan.config.history_steps+plan.config.future_steps} samples (${plan.config.history_steps} history + ${plan.config.future_steps} future). Starts are ${plan.config.stride} samples apart. Split counts are windows, not raw timesteps. Output shape: [${plan.config.shard_windows.toLocaleString()}, ${plan.config.history_steps+plan.config.future_steps}, 42], with a smaller final bin per terrain/source/split if needed.`;summary.append(metrics,explanation);const errors=$('builder-errors');errors.replaceChildren();
+  const explanation=document.createElement('p');explanation.className='hint';explanation.textContent=`${plan.config.history_steps} history + ${plan.config.future_steps} future samples · Stride ${plan.config.stride} · Bin shape [${plan.config.shard_windows.toLocaleString()}, ${plan.config.history_steps+plan.config.future_steps}, 42]. Final bins may contain fewer windows.`;summary.append(metrics,explanation);const errors=$('builder-errors');errors.replaceChildren();
   for(const message of plan.errors){const item=document.createElement('li');item.textContent=message;errors.append(item);}errors.hidden=!plan.errors.length;
 }
 bind('builder-add-real',()=>addDatasetSource());

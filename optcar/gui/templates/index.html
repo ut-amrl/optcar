@@ -2,77 +2,75 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>OptCar · Dynamics workbench</title>
+  <title>OptCar</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='bin_explorer.css') }}">
 </head>
 <body>
 <header>
-  <div class="brand"><span class="mark">O</span><div><strong>OptCar</strong><small>DYNAMICS WORKBENCH</small></div></div>
-  <nav aria-label="Workbench tabs"><button id="tab-raw" class="tab active">01 <span>ROS2 bags → bins</span></button><button id="tab-bins" class="tab">02 <span>Raw bin viewer</span></button><button id="tab-dbm" class="tab">03 <span>DBM calibration</span></button><button id="tab-generate" class="tab">04 <span>Synthetic raw bins</span></button><button id="tab-syn-bins" class="tab">05 <span>Visualize synthetic data</span></button><button id="tab-builder" class="tab">06 <span>Dataset builder</span></button><button id="tab-dataset-viewer" class="tab">07 <span>Dataset viewer</span></button><button id="tab-model" class="tab">08 <span>Transformer evaluation</span></button></nav>
-  <span class="local-badge"><i></i> OFFLINE WORKSPACE</span>
+  <div class="brand"><strong>OptCar</strong></div>
+  <nav aria-label="OptCar tabs"><button id="tab-raw" class="tab active"><span>ROS2 bags → bins</span></button><button id="tab-bins" class="tab"><span>Raw bin viewer</span></button><button id="tab-dbm" class="tab"><span>DBM calibration</span></button><button id="tab-generate" class="tab"><span>Synthetic raw bins</span></button><button id="tab-syn-bins" class="tab"><span>Visualize synthetic data</span></button><button id="tab-builder" class="tab"><span>Dataset builder</span></button><button id="tab-dataset-viewer" class="tab"><span>Dataset viewer</span></button><button id="tab-model" class="tab"><span>Transformer evaluation</span></button></nav>
 </header>
 <div id="raw-workspace" class="workspace raw-workspace">
 <aside>
-  <section><span class="eyebrow">RAW DATA</span><h2>Find your recordings.</h2>
-    <label>Folder containing ROS2 bags<input id="raw-root" placeholder="/path/to/rosbags/corl26"></label>
-    <button id="raw-scan" class="primary wide">Scan folder <span>↗</span></button>
-    <p class="hint">Finds bags inside nested folders. Review metadata and choose the recordings to convert.</p>
+  <section><h2>Input and output</h2>
+    <label>Input folder<input id="raw-root" placeholder="/path/to/rosbags/corl26"></label>
+    <button id="raw-scan" class="primary wide">Scan folder</button>
     <label>Output folder<input id="raw-output" placeholder="Defaults to the parent folder / bins"></label>
-    <p class="hint" id="raw-output-preview">Folder structure is preserved inside output/data. Each bag becomes one raw .bin.</p>
+    <p class="hint" id="raw-output-preview">Preserves subfolders in output/data; one bin per bag.</p>
   </section>
-  <section><span class="eyebrow">CONVERSION SETTINGS</span><h2>Align the recorded topics.</h2>
+  <section><h2>Conversion settings</h2>
     <label>Pose topic<input id="raw-pose" value="/super_odometry/pose"></label>
     <label>Velocity topic<input id="raw-twist" value="/super_odometry/twist_wf"></label>
     <label>Command topic<input id="raw-command" value="/cmd_vel"></label>
-    <details><summary>Auxiliary data</summary><label>Body velocity topic<input id="raw-aux-twist" value="/super_odometry/twist" placeholder="Leave blank to disable"></label><p class="hint">Save the recorded body twist in a separate auxiliary bin, aligned with the main bin. Missing auxiliary data does not block conversion.</p></details>
+    <details><summary>Auxiliary data</summary><label>Body velocity topic<input id="raw-aux-twist" value="/super_odometry/twist" placeholder="Leave blank to disable"></label><p class="hint">Saves body twist in an aligned auxiliary bin when available.</p></details>
     <div class="two"><label>Velocity frame<select id="raw-frame"><option value="world">World</option><option value="body">Body</option></select></label><label>Command format<select id="raw-command-type"><option value="twist_steering">Twist: z = steering</option><option value="ackermann">Ackermann</option></select></label></div>
     <div class="two"><label>Timestep (s)<input id="raw-dt" type="number" min="0.001" step="0.01" value="0.02"></label><label>Action shift (s)<input id="raw-shift" type="number" step="0.01" value="0"></label></div>
     <label>Maximum duration per bag (s)<input id="raw-duration" type="number" min="0.02" step="1" placeholder="Full recording"></label>
     <label><input id="raw-extra-cmd" type="checkbox">Add unshifted command columns (17 features)</label>
     <label><input id="raw-overwrite" type="checkbox">Overwrite selected bags’ existing bins</label>
-    <p class="hint">Default: 15 float32 columns, world pose and velocity, plus velocity/steering commands. Uses bag time and the latest sample at each timestep, matching WheeledLab raw alignment.</p>
+    <p class="hint">15 float32 columns: world pose, world velocity, and commands. Uses the latest sample at each bag-time timestep.</p>
     <button id="raw-convert" class="primary wide" disabled>Convert selected bags</button>
   </section>
 </aside>
 <main>
-  <div class="view-heading"><div><span class="eyebrow">RECORDING LIBRARY</span><h1>From recordings to raw bins.</h1></div><span class="tag">ROS2 · SQLITE / MCAP</span></div>
-  <div class="metrics"><div><span>Discovered</span><strong id="raw-count">—</strong><small>recordings</small></div><div><span>Selected</span><strong id="raw-selected">0</strong><small>ready to convert</small></div><div><span>Selected duration</span><strong id="raw-time">—</strong><small>seconds</small></div><div><span>Selected size</span><strong id="raw-size">—</strong><small>on disk</small></div></div>
+  <div class="view-heading"><div><h1>ROS2 bags → bins</h1></div></div>
+  <div class="metrics"><div><span>Discovered</span><strong id="raw-count">—</strong><small>recordings</small></div><div><span>Selected</span><strong id="raw-selected">0</strong><small>recordings</small></div><div><span>Selected duration</span><strong id="raw-time">—</strong><small>seconds</small></div><div><span>Selected size</span><strong id="raw-size">—</strong><small>on disk</small></div></div>
   <div class="raw-toolbar"><label>Filter recordings<input id="raw-filter" placeholder="Terrain, session, or bag name"></label><button id="raw-all" class="secondary">Select visible</button><button id="raw-none" class="secondary">Clear visible</button></div>
-  <div class="raw-library"><div id="raw-bags" class="bag-grid" aria-label="ROS2 recordings"><p class="raw-empty">Enter a folder path and scan to see your recordings.</p></div></div>
+  <div class="raw-library"><div id="raw-bags" class="bag-grid" aria-label="ROS2 recordings"><p class="raw-empty">Scan an input folder to list bags.</p></div></div>
   <details id="raw-metadata" class="raw-card" hidden><summary id="raw-metadata-title">Recording metadata</summary><pre id="raw-metadata-body"></pre></details>
   <section id="raw-progress" class="raw-card progress-card" hidden aria-live="polite">
-    <div class="section-heading"><div><span class="eyebrow">CONVERSION PROGRESS</span><h2 id="raw-job-title">Preparing conversion…</h2></div><button id="raw-cancel" class="secondary">Cancel</button></div>
+    <div class="section-heading"><div><h2 id="raw-job-title">Preparing conversion…</h2></div><button id="raw-cancel" class="secondary">Cancel</button></div>
     <div class="progress-track"><div id="raw-progress-bar"></div></div>
     <div class="progress-caption"><strong id="raw-percent">0%</strong><span id="raw-current">Starting…</span></div>
     <div class="progress-stats"><div><span>Bags handled</span><strong id="raw-handled">0 / 0</strong></div><div><span>Current messages</span><strong id="raw-messages">—</strong></div><div><span>Elapsed</span><strong id="raw-elapsed">—</strong></div><div><span>Estimated remaining</span><strong id="raw-eta">—</strong></div></div>
     <div class="progress-track small"><div id="raw-bag-progress"></div></div>
-    <p id="raw-progress-output" class="hint"></p><button id="raw-view-bins" class="primary" hidden>View raw bins ↗</button><div id="raw-results" class="raw-results"></div>
+    <p id="raw-progress-output" class="hint"></p><button id="raw-view-bins" class="primary" hidden>View raw bins</button><div id="raw-results" class="raw-results"></div>
   </section>
-  <div id="raw-status" role="status">Scan a folder to inspect bags and choose what to convert.</div>
+  <div id="raw-status" role="status">No folder scanned.</div>
 </main>
 </div>
 <div id="bins-workspace" class="workspace bins-workspace" hidden>
 <aside id="bin-browser" aria-label="Raw bin folder browser">
-  <section><span class="eyebrow">BIN LIBRARY</span><h2 id="bin-browser-title">Browse your raw bins.</h2>
+  <section><h2 id="bin-browser-title">Raw bins</h2>
     <label>Folder or .bin file<input id="bin-root" placeholder="/path/to/bins"></label>
-    <button id="bin-scan" class="primary wide">Open folder <span>↗</span></button>
+    <button id="bin-scan" class="primary wide">Open folder</button>
     <label id="bin-env-label" hidden><span id="bin-env-title">Environment</span><select id="bin-env" disabled><option value="0">0</option></select></label>
-    <p id="bin-batch-info" class="hint" hidden>Open a synthetic bin to choose a trajectory by its batch index.</p>
+    <p id="bin-batch-info" class="hint" hidden>Select a trajectory by batch index.</p>
     <details><summary>Layout settings</summary>
-      <p class="hint">Read from metadata when available. Headerless files default to 0.02 s and one environment.</p>
+      <p class="hint">Without metadata: 0.02 s, one environment.</p>
       <div class="two"><label>Timestep (s)<input id="bin-dt" type="number" min="0.000001" step="0.01" placeholder="Auto"></label><label>Columns<select id="bin-columns"><option value="">Auto</option><option value="15">15</option><option value="17">17</option></select></label></div>
       <label>Environment count<input id="bin-envs" type="number" min="1" placeholder="Auto"></label>
       <button id="bin-apply" class="secondary wide">Apply and reload</button>
     </details>
     <label>Filter files<input id="bin-filter" placeholder="Folder or bin name"></label>
     <div class="section-heading"><span id="bin-count" class="muted">No folder open</span><button id="bin-collapse" class="bag-metadata-button">Collapse folders</button></div>
-    <div id="bin-tree" class="bin-tree" aria-label="Bin files">Open a folder to browse its bins.</div>
+    <div id="bin-tree" class="bin-tree" aria-label="Bin files">No folder open.</div>
   </section>
 </aside>
 <main>
-  <div class="view-heading"><div><span id="bin-viewer-heading" class="eyebrow">RAW BIN VIEWER</span><h1 id="bin-title">Inspect the recorded motion.</h1></div><button id="bin-tune-dbm" class="secondary" disabled>Tune DBM</button><button id="bin-toggle-browser" class="secondary" aria-expanded="true" aria-controls="bin-browser">Hide browser</button></div>
-  <p id="bin-path" class="hint bin-path">Choose a raw bin from the folder browser.</p>
+  <div class="view-heading"><div><span id="bin-viewer-heading" class="eyebrow">Raw bin viewer</span><h1 id="bin-title">No bin selected</h1></div><button id="bin-tune-dbm" class="secondary" disabled>Tune DBM</button><button id="bin-toggle-browser" class="secondary" aria-expanded="true" aria-controls="bin-browser">Hide browser</button></div>
+  <p id="bin-path" class="hint bin-path">Select a bin in the folder browser.</p>
   <div id="bin-summary" class="bin-summary" hidden><span id="bin-duration"></span><span id="bin-samples"></span><span id="bin-layout"></span></div>
   <div class="bin-action-controls">
     <div class="section-heading"><span class="muted">Action plot time range</span><span id="bin-action-time" class="muted">Current: —</span></div>
@@ -87,7 +85,7 @@
     <div id="bin-action-error" role="status" hidden></div>
   </div>
   <div class="bin-overview">
-  <div class="trajectory-panel"><div class="plot-heading"><span>World trajectory <small>x / y · meters</small></span><button id="bin-reset" class="bag-metadata-button">Reset view</button></div><canvas id="bin-trajectory" aria-label="Raw bin world trajectory"></canvas><div id="bin-empty" class="bin-empty"><div class="empty-orbit">↗</div><h3>Open a bin to explore its motion.</h3><p>Expand folders on the left to choose a recording.</p></div><div class="plot-footer"><span>Scroll to zoom · drag to pan</span><span id="bin-frame-info">No sample selected</span></div></div>
+  <div class="trajectory-panel"><div class="plot-heading"><span>World trajectory <small>x / y · meters</small></span><button id="bin-reset" class="bag-metadata-button">Reset view</button></div><canvas id="bin-trajectory" aria-label="Raw bin world trajectory"></canvas><div id="bin-empty" class="bin-empty"><h3>No bin selected</h3></div><div class="plot-footer"><span>Scroll to zoom · drag to pan</span><span id="bin-frame-info">No sample selected</span></div></div>
     <div class="bin-command-stack">
       <div class="bin-command-panel"><div class="plot-heading"><span>Velocity <small>m/s</small></span></div><div class="bin-signal-legend"><span class="bin-command-color" id="bin-command-value">Command —</span><span class="bin-body-color" id="bin-forward-value">Body x —</span><span id="bin-unshifted-value" hidden></span></div><canvas id="bin-forward-plot" aria-label="Command velocity and forward body velocity over time"></canvas></div>
       <div class="bin-command-panel"><div class="plot-heading"><span>Steering <small>rad</small></span></div><div class="bin-signal-legend"><span class="bin-command-color" id="bin-steer-value">Command —</span><span id="bin-unshifted-steer-value" hidden></span></div><canvas id="bin-command-steer" aria-label="Steering command over time"></canvas></div>
@@ -98,19 +96,19 @@
   <p id="bin-warning" class="hint" hidden></p>
   <div id="bin-signals" class="signal-panels bin-signals"></div>
   <details id="bin-stats" class="raw-card" hidden><summary>Signal ranges and missing values</summary><div id="bin-stat-rows" class="bin-stat-rows"></div></details>
-  <div id="bin-status" role="status">Open a folder or a single raw .bin file.</div>
+  <div id="bin-status" role="status">No bin loaded.</div>
 </main>
 </div>
-<div id="dbm-workspace" hidden><div class="dbm-mode-bar"><button id="dbm-manual" class="secondary">Manual bin tuning</button><button id="dbm-advanced" class="secondary" title="Fit selected DBM parameters to a ROS2 recording. Fitting starts only when you click Fit DBM parameters.">Automatic bag fitting</button></div><iframe id="dbm-tool" title="Manual DBM calibration" data-src="/dbm/" loading="lazy"></iframe></div>
+<div id="dbm-workspace" hidden><div class="dbm-mode-bar"><button id="dbm-manual" class="secondary">Manual bin tuning</button><button id="dbm-advanced" class="secondary" title="Fit selected DBM parameters to a ROS2 recording.">Automatic bag fitting</button></div><iframe id="dbm-tool" title="Manual DBM calibration" data-src="/dbm/" loading="lazy"></iframe></div>
 <div id="generation-workspace" class="workspace generation-workspace" hidden>
 <main aria-label="Synthetic data setup">
-  <div class="view-heading generation-heading"><div><span class="eyebrow">SYNTHETIC DATA</span><h1>Set up your collection.</h1></div><div class="generation-heading-summary">
+  <div class="view-heading generation-heading"><div><h1>Generate synthetic bins</h1></div><div class="generation-heading-summary">
   <div class="generation-overview"><span><strong id="generation-episodes">10 / 320</strong> runs / trajectories</span><span><strong id="generation-duration">10s</strong> per run</span><span><strong id="generation-steps">500</strong> samples / trajectory</span><span><strong id="generation-timestep">0.02s</strong> timestep</span></div>
   <p id="generation-output" class="hint"></p>
   </div><button id="generate" class="primary">Generate raw bins</button></div>
   <div class="generation-settings-grid">
     <section class="generation-settings-card">
-      <h2>Collection</h2>
+      <h2>Run settings</h2>
       <div class="two"><label>Terrain<input id="generation-terrain" value="road"></label><label>Run name<input id="run-name" value="default"></label></div>
       <div class="generation-three"><label>Runs / bins<input id="episodes" type="number" value="10" min="1"></label><label>Batch size<input id="batch-size" type="number" value="32" min="1"></label><label>Base seed<input id="seed" type="number" value="42" min="0"></label></div>
       <div class="two"><label>Duration (s)<input id="duration" type="number" value="10" min="0.02" step="1"></label><label>Timestep (s)<input id="generation-dt" type="number" value="0.02" min="0.000001" step="0.005"></label></div>
@@ -126,35 +124,34 @@
     </section>
     <section class="generation-settings-card generation-preset">
       <div class="section-heading"><h2>Device &amp; DBM config</h2><button id="refresh-devices" class="secondary">Refresh GPUs</button></div>
-      <label>Collection device<select id="device"><option value="cpu">CPU</option></select></label>
+      <label>Processing device<select id="device"><option value="cpu">CPU</option></select></label>
       <p id="device-info" class="hint" role="status">Detecting GPUs…</p>
       <label>DBM config path<input id="generation-preset-path" placeholder="/full/path/to/mulch.yaml" spellcheck="false"></label>
-      <div class="generation-preset-check"><span id="generation-preset-status" class="hint" role="status">Enter a YAML path, or leave blank to use the saved terrain preset.</span><button id="generation-load-preset" class="secondary">Load config</button></div>
+      <div class="generation-preset-check"><span id="generation-preset-status" class="hint" role="status">YAML path; blank uses the saved terrain preset.</span><button id="generation-load-preset" class="secondary">Load config</button></div>
       <details id="generation-preset-details" hidden><summary>Saved parameters</summary><dl id="generation-preset-values"></dl></details>
     </section>
   </div>
   <section id="generation-randomization" class="generation-randomization">
     <div class="section-heading"><h2>Domain randomization</h2><div class="generation-range-toolbar"><label class="check"><input id="generation-resample" type="checkbox">Resample each run</label><button id="generation-ranges-all" class="secondary">Select all</button><button id="generation-ranges-clear" class="secondary">Clear ranges</button></div></div>
-    <p class="hint generation-range-help">Select a parameter to set its range. Uniform: min / max. Normal: mean / std. Unselected values stay at the saved preset.</p>
+    <p class="hint generation-range-help">Uniform: min / max. Normal: mean / std. Unselected parameters use the saved preset.</p>
     <div id="generation-range-grid" class="generation-range-grid" aria-label="Parameter ranges"></div>
     <div class="generation-range-footer"><p id="generation-ranges-status" class="hint" role="status">All parameters use the saved preset.</p><span class="hint">Vehicle values are shared within a batch; command biases vary per trajectory.</span></div>
   </section>
-  <section class="generation-progress generation-dashboard"><div class="section-heading"><div><span class="eyebrow">COLLECTION DASHBOARD</span><h2>Generation runs</h2></div><div class="generation-range-toolbar"><span id="generation-runs-summary" class="muted"></span><button id="generation-runs-refresh" class="secondary">Refresh runs</button></div></div><p class="hint">Each collection runs in its own tmux session and continues when the GUI is closed. Attach from a terminal to monitor it.</p><div id="generation-jobs" class="generation-run-grid">No tmux collections yet.</div></section>
+  <section class="generation-progress generation-dashboard"><div class="section-heading"><div><h2>Generation runs</h2></div><div class="generation-range-toolbar"><span id="generation-runs-summary" class="muted"></span><button id="generation-runs-refresh" class="secondary">Refresh runs</button></div></div><p class="hint">Runs continue in tmux after the GUI closes.</p><div id="generation-jobs" class="generation-run-grid">No generation runs.</div></section>
   <div id="generation-next" class="button-row" hidden><button id="generation-view" class="secondary">Visualize synthetic data</button><button id="generation-build" class="primary">Use in dataset builder</button></div>
-  <div id="generation-status" role="status">Ready. Use a new run name when changing collection settings.</div>
-  <section class="dataset-section"><div class="section-heading"><div><span class="eyebrow">DATA LIBRARY</span><h2>Terrain collections</h2></div><button id="refresh-data" class="secondary">Refresh</button></div><div id="dataset-tree" class="dataset-tree">No generated collections yet.</div></section>
+  <div id="generation-status" role="status">Use a new run name when changing settings.</div>
+  <section class="dataset-section"><div class="section-heading"><div><h2>Generated data</h2></div><button id="refresh-data" class="secondary">Refresh</button></div><div id="dataset-tree" class="dataset-tree">No generated data.</div></section>
 </main>
 </div>
 <div id="builder-workspace" class="workspace builder-workspace" hidden>
 <aside aria-label="Dataset settings">
-  <section><span class="eyebrow">TRAINING DATASET</span><h2>Build training windows.</h2>
+  <section><h2>Build settings</h2>
     <label>Output parent folder<input id="builder-output" placeholder="/path/to/datasets/built/default"></label>
     <p id="builder-output-preview" class="hint">Output: &lt;chosen folder&gt;/processed/{sim|real}/{terrain}/{train|test|valid}</p>
     <label>Processing device<select id="builder-device"><option value="cpu">Detecting GPUs…</option></select></label>
     <div class="button-row"><button id="builder-refresh-devices" class="secondary">Refresh GPUs</button></div>
     <p id="builder-device-info" class="hint"></p>
     <label>File loading workers<input id="builder-workers" type="number" min="1" step="1" value="16"></label>
-    <p class="hint">WheeledLab's default: 16 threads load bins while the selected device converts windows.</p>
     <div class="two"><label>History samples<input id="history-steps" type="number" value="250" min="2"></label><label>Future transitions<input id="future-steps" type="number" value="50" min="1"></label></div>
     <div class="two"><label>Timestep (s)<input id="builder-dt" type="number" value="0.02" min="0.000001" step="0.005"></label><label>Window stride<input id="stride" type="number" value="10" min="1"></label></div>
     <p id="builder-window-hint" class="hint"></p>
@@ -167,40 +164,38 @@
     </details>
     <button id="builder-review" class="secondary wide">Review selected bins</button>
     <button id="builder-build" class="primary wide" disabled>Build dataset</button>
-    <p class="hint">Writes world, body and delta states with commands and vehicle ID. Bins go directly in processed/{sim|real}/{terrain}/{train|test|valid} inside the chosen folder.</p>
+    <p class="hint">Each window contains world, body, and delta states, commands, and vehicle ID.</p>
     <details><summary>Export loaded ROS2 recording</summary>
       <label>Export run name<input id="export-run" value="default"></label>
-      <p class="hint">Uses the recording loaded in Automatic bag fitting, its terrain and timestep, and these window settings.</p>
+      <p class="hint">Uses the recording from Automatic bag fitting and these window settings.</p>
       <button id="export" class="secondary wide">Export recording to real data</button>
     </details>
   </section>
 </aside>
 <main>
-  <div class="view-heading"><div><span class="eyebrow">DATASET BUILDER</span><h1>Bring your recordings together.</h1></div></div>
-  <p class="hint">Add real or synthetic raw bin folders, browse their trees, and choose the recordings to include.</p>
+  <div class="view-heading"><div><h1>Dataset builder</h1></div></div>
   <div class="button-row"><button id="builder-add-real" class="secondary">+ Real bins</button><button id="builder-add-sim" class="secondary">+ Synthetic bins</button></div>
-  <section class="raw-card builder-plan"><span class="eyebrow">DATASET PREVIEW</span><div id="builder-summary">Scan sources, select bins, then review the dataset.</div><ul id="builder-errors" class="error" hidden></ul><p class="hint">Counts are estimates before checking invalid samples. As in WheeledLab, trajectories containing missing samples are skipped. Each window stays within its recording; output bins combine windows from multiple recordings.</p></section>
+  <section class="raw-card builder-plan"><h2>Dataset preview</h2><div id="builder-summary">No bins selected.</div><ul id="builder-errors" class="error" hidden></ul><p class="hint">Estimated window counts; trajectories with missing samples are skipped. Output bins may combine windows from multiple recordings.</p></section>
   <div id="builder-sources" class="builder-sources"></div>
 
-  <section class="generation-progress generation-dashboard"><div class="section-heading"><div><span class="eyebrow">BUILD DASHBOARD</span><h2>Dataset builds</h2></div><div class="generation-range-toolbar"><span id="builder-runs-summary" class="muted"></span><button id="builder-runs-clear" class="secondary" title="Clear finished dashboard entries. Active builds and dataset files are kept." disabled>Clear finished builds</button><button id="builder-runs-refresh" class="secondary">Refresh builds</button></div></div><p class="hint">Each build runs in its own tmux session and continues when the GUI is closed.</p><div id="builder-jobs" class="generation-run-grid">No dataset builds to show.</div></section>
-  <div id="builder-status" role="status">Ready. Add a source folder to begin.</div>
+  <section class="generation-progress generation-dashboard"><div class="section-heading"><div><h2>Dataset builds</h2></div><div class="generation-range-toolbar"><span id="builder-runs-summary" class="muted"></span><button id="builder-runs-clear" class="secondary" title="Clear finished dashboard entries. Active builds and dataset files are kept." disabled>Clear finished builds</button><button id="builder-runs-refresh" class="secondary">Refresh builds</button></div></div><p class="hint">Builds continue in tmux after the GUI closes.</p><div id="builder-jobs" class="generation-run-grid">No dataset builds.</div></section>
+  <div id="builder-status" role="status">No source folder added.</div>
 </main>
 </div>
 <div id="dataset-viewer-workspace" class="workspace dataset-viewer-workspace" hidden>
 <aside class="dataset-browser-pane" aria-label="Processed folder explorer">
-  <section><span class="eyebrow">FOLDER EXPLORER</span><h2>Browse processed bins.</h2>
+  <section><h2>Processed bins</h2>
     <label>Browse folder<input id="dataset-browser-root" placeholder="/full/path/to/processed"></label>
-    <div class="two"><button id="dataset-browser-browse" class="secondary">Browse folder</button><button id="dataset-browser-up" class="secondary">↑ Parent</button></div>
+    <div class="two"><button id="dataset-browser-browse" class="secondary">Browse</button><button id="dataset-browser-up" class="secondary">↑ Parent</button></div>
     <label>Add folders to<select id="dataset-browser-target"><option value="dataset">Dataset</option><option value="test">Test dataset</option></select></label>
-    <div id="dataset-browser-tree" class="bin-tree">Enter a folder to browse its subfolders and bins.</div>
-    <p id="dataset-browser-status" class="hint" role="status">Copy a folder path or add it directly to the setup.</p>
+    <div id="dataset-browser-tree" class="bin-tree">No folder open.</div>
+    <p id="dataset-browser-status" class="hint" role="status"></p>
   </section>
 </aside>
 <aside class="dataset-setup-pane" aria-label="Dataset viewer settings">
-  <section><span class="eyebrow">DATALOADER CONFIG</span><h2>Choose your dataset mix.</h2>
+  <section><h2>Dataset config</h2>
     <label>Config path and filename<input id="dataset-viewer-config" placeholder="/full/path/to/dconfig.py"></label>
     <div class="two"><button id="dataset-viewer-config-load" class="secondary">Load config</button><button id="dataset-viewer-config-save" class="secondary">Save dconfig.py</button></div>
-    <p class="hint">WheeledLab's dataloader_config() format, using OptCar imports.</p>
     <div class="section-heading"><strong class="muted">Dataset folders</strong><button id="dataset-viewer-add" class="secondary">+ Folder</button></div>
     <div id="dataset-viewer-datasets" class="viewer-folder-rows"></div>
     <details id="dataset-viewer-test-section"><summary>Test dataset folders</summary>
@@ -208,27 +203,26 @@
       <button id="dataset-viewer-test-add" class="secondary wide">+ Test folder</button>
     </details>
     <label>Selection seed<input id="dataset-viewer-seed" type="number" min="0" step="1" placeholder="Empty: first trajectories"></label>
-    <p class="hint">Per-folder limits count processed windows. -1 means All. A seed selects a reproducible subset.</p>
+    <p class="hint">Limits count windows; -1 loads all. A seed selects a reproducible subset.</p>
     <div class="two"><label>View dataset<select id="dataset-viewer-set"><option value="dataset">Dataset</option><option value="test">Test dataset</option></select></label><label>Split filter<select id="dataset-viewer-split"><option value="all">All / explicit folders</option><option value="train">Training</option><option value="val">Validation</option><option value="test">Test</option></select></label></div>
     <div class="two"><label>History samples<input id="dataset-viewer-history" type="number" min="2" step="1" value="250"></label><label>Future transitions<input id="dataset-viewer-future" type="number" min="1" step="1" value="50"></label></div>
-    <label>Timestep · sim_dt (s)<input id="dataset-viewer-dt" type="number" min="0.000001" step="0.001" value="0.02"></label>
-    <p class="hint">Horizons come from the model or bin metadata; they are kept outside DataloaderConfig.</p>
-    <details><summary>WheeledLab loader settings</summary><div id="dataset-viewer-options" class="parameter-grid"></div></details>
+    <label>Timestep (s)<input id="dataset-viewer-dt" type="number" min="0.000001" step="0.001" value="0.02"></label>
+    <details><summary>Loader settings</summary><div id="dataset-viewer-options" class="parameter-grid"></div></details>
     <button id="dataset-viewer-load" class="primary wide">Load dataset</button>
     <div id="dataset-viewer-selection" class="viewer-selection"></div>
     <dl id="dataset-viewer-metadata" class="dataset-viewer-metadata" hidden></dl>
   </section>
-  <section><span class="eyebrow">TRAJECTORY</span>
+  <section><h2>Trajectory</h2>
     <label>Trajectory index (0-based)<input id="dataset-viewer-index" type="number" min="0" step="1" value="0" disabled></label>
     <div class="two"><button id="dataset-viewer-previous" class="secondary" disabled>← Previous</button><button id="dataset-viewer-next" class="secondary" disabled>Next →</button></div>
     <div class="two"><button id="dataset-viewer-show" class="secondary" disabled>Show trajectory</button><button id="dataset-viewer-shuffle" class="secondary" disabled>Shuffle</button></div>
     <label>Shuffle seed<input id="dataset-viewer-shuffle-seed" type="number" min="0" step="1" placeholder="Empty: a new order each click"></label>
-    <p class="hint">Shuffle changes viewing order across the selected mix. The body frame stays anchored at history − 1.</p>
+    <p class="hint">Body frame is anchored at the final history sample.</p>
   </section>
 </aside>
 <main>
-  <div class="view-heading"><div><span class="eyebrow">DATASET VIEWER</span><h1 id="dataset-viewer-title">See the saved training data.</h1></div></div>
-  <p id="dataset-viewer-path" class="hint dataset-viewer-path">Enter processed dataset directories and window settings, then load a trajectory.</p>
+  <div class="view-heading"><div><h1 id="dataset-viewer-title">Dataset viewer</h1></div></div>
+  <p id="dataset-viewer-path" class="hint dataset-viewer-path">No dataset loaded.</p>
   <div class="legend dataset-viewer-legend"><span class="dataset-history">History</span><span class="dataset-future">Future</span><span class="dataset-anchor">Current anchor</span><span class="dataset-cursor">Selected sample</span></div>
   <div class="dataset-viewer-trajectories">
     <div class="trajectory-panel"><div class="plot-heading">World trajectory <small>meters</small></div><canvas id="dataset-viewer-world" aria-label="Saved world trajectory"></canvas><div class="plot-footer">World coordinates<span id="dataset-viewer-world-value">—</span></div></div>
@@ -239,13 +233,13 @@
     <div><div class="plot-heading">Velocity <small>m/s</small></div><div class="bin-signal-legend"><span class="bin-command-color" id="dataset-viewer-velocity-value">Command —</span><span class="bin-body-color" id="dataset-viewer-forward-value">Stored body vx —</span></div><canvas id="dataset-viewer-velocity" aria-label="Commanded velocity and saved body forward velocity"></canvas></div>
     <div><div class="plot-heading">Steering <small>radians</small></div><div class="bin-signal-legend"><span class="bin-command-color" id="dataset-viewer-steering-value">Command —</span></div><canvas id="dataset-viewer-steering" aria-label="Saved steering commands"></canvas></div>
   </div>
-  <div id="dataset-viewer-status" role="status">Ready. Load a config or enter directories and window settings.</div>
+  <div id="dataset-viewer-status" role="status">No dataset loaded.</div>
 </main>
 </div>
 <div id="dynamics-workspace" class="workspace" hidden>
 <aside>
   <section>
-    <div class="section-heading"><span class="eyebrow">INPUT</span><span id="bag-state" class="muted">No recording loaded</span></div>
+    <div class="section-heading"><span id="bag-state" class="muted">No recording loaded</span></div>
     <h2>Load a recording</h2>
     <label>ROS2 bag path<input id="bag-path" placeholder="/path/to/ros2_bag or recording.mcap"></label>
     <button id="inspect-topics" class="secondary wide">Inspect topics</button><pre id="topics" class="topic-list" hidden></pre>
@@ -259,12 +253,11 @@
       <div class="two"><label>Command delay (s)<input id="command-shift" type="number" value="0" step="0.02"></label><label>Timestamp<select id="timestamp-source"><option value="bag">Bag time</option><option value="header">Header time</option></select></label></div>
       <p class="hint">Positive delay applies commands later. Twist angular.z is interpreted as a steering angle in radians.</p>
     </details>
-    <button id="load-bag" class="primary wide">Load trajectory <span>↗</span></button>
+    <button id="load-bag" class="primary wide">Load trajectory</button>
     <label id="segment-label" hidden>Continuous segment<select id="segment"></select></label>
   </section>
   <div id="dbm-controls">
     <section>
-      <div class="section-heading"><span class="eyebrow">PHYSICS</span><span class="tag">TORCH DBM</span></div>
       <h2>Vehicle parameters</h2>
       <label>DBM config folder<input id="dbm-config-folder" placeholder="/full/path/to/configs"></label>
       <label>DBM config filename<input id="dbm-config-filename" placeholder="mulch.yaml"></label>
@@ -274,33 +267,33 @@
       <button id="run-dbm" class="primary wide">Preview DBM rollout</button>
     </section>
     <section>
-      <span class="eyebrow">IDENTIFICATION</span><h2>Fit to observed motion</h2>
-      <p class="hint">Fit on a training recording, then load a held-out recording to evaluate the saved preset.</p>
+      <h2>Automatic fitting</h2>
+      <p class="hint">Use a separate recording to evaluate the fitted parameters.</p>
       <div class="two"><label>First sample<input id="fit-start" type="number" min="0" value="0"></label><label>Last sample<input id="fit-end" type="number" min="3" value="499"></label></div>
       <details><summary>Parameters to fit</summary><div id="fit-keys" class="check-list"></div></details>
       <button id="fit" class="secondary wide">Fit DBM parameters</button>
     </section>
   </div>
   <div id="model-controls" hidden>
-    <section><span class="eyebrow">LEARNED DYNAMICS</span><h2>Load a transformer</h2>
+    <section><h2>Model checkpoint</h2>
       <label>Checkpoint path<input id="checkpoint" placeholder="checkpoints/film_specialist/specialist_best.ckpt"></label>
       <button id="inspect-checkpoint" class="secondary wide">Load checkpoint details</button>
       <div id="checkpoint-info" class="checkpoint-info muted">FiLM and cross-attention checkpoints supported.</div>
       <label>Inference device<select id="predict-device"><option value="cpu">CPU</option></select></label>
       <button id="predict" class="primary wide">Predict trajectory</button>
-      <p class="hint">Predictions use observed history and recorded future commands. The selected start needs enough history for this checkpoint.</p>
+      <p class="hint">Uses recorded history and future commands. The start sample must include enough history.</p>
     </section>
   </div>
 </aside>
 <main>
   <button id="dbm-return" class="secondary" hidden>Back to manual bin tuning</button>
-  <div class="view-heading"><div><span class="eyebrow">TRAJECTORY EXPLORER</span><h1 id="view-title">Understand the dynamics.</h1></div><button id="reset-view" class="secondary">Reset view</button></div>
+  <div class="view-heading"><div><h1 id="view-title">Transformer evaluation</h1></div><button id="reset-view" class="secondary">Reset view</button></div>
   <div class="metrics"><div><span>Position RMSE</span><strong id="metric-position">—</strong><small>meters</small></div><div><span>Heading MAE</span><strong id="metric-heading">—</strong><small>degrees</small></div><div><span>Final position error</span><strong id="metric-final">—</strong><small>meters</small></div><div><span>Recording</span><strong id="metric-duration">—</strong><small>seconds · selected segment</small></div></div>
-  <div class="trajectory-panel"><div class="plot-heading"><span>World trajectory <small>meters</small></span><div class="legend"><span class="recording">Recording</span><span class="measured">Measured future</span><span class="predicted">Prediction</span></div></div><canvas id="trajectory" aria-label="World trajectory and predicted rollout"></canvas><div id="empty-view"><div class="empty-orbit">↗</div><h3>A recording is your starting point.</h3><p>Load a ROS2 bag to explore motion and compare predictions.</p></div><div class="plot-footer">Scroll to zoom · drag to pan<span id="frame-info">No frame selected</span></div></div>
+  <div class="trajectory-panel"><div class="plot-heading"><span>World trajectory <small>meters</small></span><div class="legend"><span class="recording">Recording</span><span class="measured">Measured future</span><span class="predicted">Prediction</span></div></div><canvas id="trajectory" aria-label="World trajectory and predicted rollout"></canvas><div id="empty-view"><h3>No recording loaded</h3></div><div class="plot-footer">Scroll to zoom · drag to pan<span id="frame-info">No frame selected</span></div></div>
   <div class="transport"><button id="play" class="secondary" aria-label="Play recording">▶</button><input id="frame" aria-label="Current sample" type="range" min="0" max="1" value="0"><label>Sample<input id="current" type="number" min="0" value="249"></label><label>Horizon<input id="horizon" type="number" min="1" value="50"></label><button id="preview" class="primary">Preview</button></div>
   <div class="signal-panels"><div><div class="plot-heading">Velocity <small>m/s · measured / commanded</small></div><canvas id="velocity"></canvas></div><div><div class="plot-heading">Steering & yaw rate <small>rad / rad/s</small></div><canvas id="steering"></canvas></div></div>
   <div id="jobs" class="jobs"></div>
-  <div id="status" role="status">Ready. Load a recording or generate synthetic data from a saved terrain preset.</div>
+  <div id="status" role="status">No recording loaded.</div>
 </main>
 </div>
 <script src="{{ url_for('static', filename='app.js') }}"></script>
