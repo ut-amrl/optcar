@@ -91,3 +91,25 @@ def quaternion_continuity_filter_batch(
         quaternions = np.transpose(q, inv_perm)
 
     return quaternions
+
+
+@torch.jit.script
+def quaternion_continuity_align_torchscript(
+    reference: torch.Tensor,
+    candidate: torch.Tensor,
+) -> torch.Tensor:
+    """Align candidate quaternion sign to match reference quaternion."""
+    dot = torch.sum(reference * candidate, dim=-1, keepdim=True)
+    mask = (dot < 0).expand_as(candidate)
+    return torch.where(mask, -candidate, candidate)
+
+
+
+def quaternion_continuity_align(
+    reference: torch.Tensor,
+    candidate: torch.Tensor,
+) -> torch.Tensor:
+    """Align candidate quaternion sign to match reference quaternion (eager)."""
+    dot = torch.sum(reference * candidate, dim=-1, keepdim=True)
+    mask = (dot < 0).expand_as(candidate)
+    return torch.where(mask, -candidate, candidate)

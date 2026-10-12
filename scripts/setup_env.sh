@@ -35,6 +35,7 @@ import subprocess
 import torch
 from optcar.utils.devices import available_devices
 for module in ("numpy", "scipy", "yaml", "flask", "rosbags", "rich", "joblib", "matplotlib",
+               "lightning", "tensorboard", "tqdm", "wandb", "optcar.models.fkd", "optcar.fkd_train",
                "optcar.gui.server", "optcar.datagen.raw_bags", "optcar.datagen.build_dataset",
                "optcar.datagen.generation_jobs", "optcar.train", "optcar.evaluate"):
     importlib.import_module(module)

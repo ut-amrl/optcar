@@ -1,7 +1,9 @@
 """Frame transforms copied from WheeledLab; only local imports changed."""
 from typing import Tuple
 import torch
-from optcar.utils.math import qinverse_torch, qrotate_torch, qrelative_torch
+import torch.nn.functional as F
+from optcar.utils.math import qinverse_torch, qrotate_torch, qrelative_torch, qmultiply_torch
+from optcar.utils.filter import quaternion_continuity_align, quaternion_continuity_align_torchscript
 
 
 @torch.jit.script
@@ -95,3 +97,55 @@ def compute_delta_frame_representation(states: torch.Tensor) -> torch.Tensor:
     # Concatenate into final delta representation
     deltas = torch.cat([pos_delta, quat_delta, vel_delta, angvel_delta], dim=-1)
     return deltas
+
+
+@torch.compile(fullgraph=True, dynamic=True)  # type: ignore[arg-type]
+def reconstruct_absolute_from_deltas(deltas: torch.Tensor) -> torch.Tensor:
+    """
+    Reconstruct absolute (w.r.t. first frame) states from mixed delta/self-frame repr.
+    Pos/quat at time t are deltas expressed in frame (t-1).
+    Vel/angvel at time t are absolute, expressed in body frame of step t (AnyCar-style).
+
+    Args:
+        deltas: (B,H,7)  -> [Δpos(3), Δquat(4)]
+                (B,H,13) -> [Δpos(3), Δquat(4), vel_self(3), angvel_self(3)]
+
+    Returns:
+        abs_states: (B,H,7) or (B,H,13)
+    """
+    B, H, D = deltas.shape
+    has_vel = (D == 13)
+
+    dpos  = deltas[..., 0:3]
+    dquat = F.normalize(deltas[..., 3:7], dim=-1, eps=1e-8)
+
+    q_identity = torch.zeros((B, 4), device=deltas.device, dtype=deltas.dtype)
+    q_identity[:, 0] = 1.0
+
+    q_abs = torch.zeros((B, H, 4), device=deltas.device, dtype=deltas.dtype)
+    q_prev = q_identity
+
+    # === sequential quaternion accumulation with continuity enforcement ===
+    for t in range(H):
+        q_prev = F.normalize(qmultiply_torch(q_prev, dquat[:, t]), dim=-1, eps=1e-8)
+        if t == 0:
+            ref = q_identity
+        else:
+            ref = q_abs[:, t - 1]
+        if torch.jit.is_scripting():
+            q_prev = quaternion_continuity_align_torchscript(ref, q_prev)
+        else:
+            q_prev = quaternion_continuity_align(ref, q_prev)
+        q_abs[:, t] = q_prev
+
+    q_prev_all = torch.cat([q_identity.unsqueeze(1), q_abs[:, :-1]], dim=1)
+    dpos_world = qrotate_torch(q_prev_all, dpos)
+    pos_abs = torch.cumsum(dpos_world, dim=1)
+
+    if has_vel:
+        # Vel/angvel stay in each step's own body frame (AnyCar-style pass-through).
+        vel_self = deltas[..., 7:10]
+        ang_self = deltas[..., 10:13]
+        return torch.cat([pos_abs, q_abs, vel_self, ang_self], dim=-1)
+    else:
+        return torch.cat([pos_abs, q_abs], dim=-1)

@@ -95,13 +95,8 @@ def main(argv=None):
     fit.add_argument("--keys", nargs="+")
     fit.add_argument("--max-evaluations", type=int, default=150)
 
-    train = commands.add_parser("train", help="Train a generalist or fine-tune a specialist")
-    train.add_argument("--config", required=True)
-    train.add_argument("--architecture", choices=["film", "cross_attention"])
-    train.add_argument("--checkpoint")
-    train.add_argument("--resume")
-    train.add_argument("--device")
-    train.add_argument("--output")
+    from optcar.fkd_train import add_training_arguments
+    add_training_arguments(commands.add_parser("train", help="Train or fine-tune a WheeledLab FKD model"))
 
     evaluate = commands.add_parser("evaluate", help="Evaluate a checkpoint on held-out bins")
     evaluate.add_argument("--checkpoint", required=True)
@@ -192,17 +187,8 @@ def _dispatch(args):
         write_yaml(output, {"params": result["params"], "calibration": calibration})
         _print(result)
     elif args.command == "train":
-        from optcar.dataset import DataConfig
-        from optcar.models.fkd_transformer import ModelConfig
-        from optcar.train import TrainConfig, train
-        cfg = read_config(args.config)
-        training, model = cfg.get("training", {}), cfg.get("model", {})
-        for key in ("checkpoint", "resume", "device", "output"):
-            if getattr(args, key) is not None:
-                training[key] = getattr(args, key)
-        if args.architecture:
-            model["architecture"] = args.architecture
-        _print(train(TrainConfig(**training), DataConfig(**cfg.get("data", {})), ModelConfig(**model), progress=_print))
+        from optcar.fkd_train import run_training
+        _print(run_training(args))
     elif args.command == "evaluate":
         from optcar.evaluate import evaluate
         result = evaluate(args.checkpoint, args.datasets, args.split, args.device, args.batch_size, args.real_only)

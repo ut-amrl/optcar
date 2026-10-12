@@ -19,7 +19,7 @@ class DataloaderConfig:
     num_trajectories: Optional[Union[int, List[int]]] = None
     test_num_trajectories: Optional[Union[int, List[int]]] = None
 
-    sim_dt: float = 0.005  # dt at which replay was run
+    sim_dt: float = 0.02  # dt at which replay was run
 
     debug: bool = False
 

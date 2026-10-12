@@ -45,7 +45,7 @@ In **DBM calibration**, set both **DBM config folder** (full path) and **DBM con
 - **DBM calibration:** the manual web estimator copied from WheeledLab. Defaults use its CORL26 AlphaTruck preset (`len_f = len_r = 0.245 m`), shared with the backend and `configs/dbm.yaml`. The left folder explorer shares the raw viewer's expandable tree, filtering, selection, and duration/sample metadata. Click a raw 15/17-column bin, scrub the current sample, set a prediction horizon and command delay, edit all 13 DBM parameters, and use **Set & Rollout** to overlay the predicted future in the current sample’s body frame. **Tune DBM** in the raw viewer opens that exact bin and sample. World-trajectory segment selection and YAML saving/loading, plus circle/figure-eight/Dubins/custom reference trajectories, are preserved. Aggregate comparisons are not exposed in the interface. Terrain presets use OptCar’s existing preset storage. **Automatic bag fitting** opens the separate, existing ROS2-bag workflow: bounded least squares fits selected parameters to measured one-step transitions only after **Fit DBM parameters** is clicked; dataset creation has its own tabs. **Back to manual bin tuning** returns to the manual tool.
 - **Synthetic raw bins:** choose a saved terrain preset, timestep, run count/duration, batch size, command bounds/noise, seed and selected per-parameter ranges. This follows WheeledLab’s batched controller, analytical DBM environment and data collector: each run saves one float32 `[batch_size, duration/dt, 15]` bin in `data/`, plus WheeledLab metadata. **Visualize synthetic data** opens the output in the synthetic viewer; **Use in dataset builder** adds it as a source. Nothing runs until you click **Generate raw bins**.
 - **Visualize synthetic data:** reuses the raw bin viewer and folder explorer, with a **Batch index (0-based)** selector for WheeledLab packed `[environment, step, feature]` bins. For batch size 32, indices `0` through `31` select the individual trajectories in each bin. Legacy OptCar files contain one trajectory, so they expose index `0`. Packed bins read their environment count from metadata or **Layout settings → Environment count**. Playback, the sample slider, world trajectory, body-forward velocity, steering, time ranges and Y-axis limits use the selected trajectory. Folder, layout and frame selection are retained separately for the raw and synthetic viewer tabs. Generation completion and each saved synthetic collection provide a direct **Visualize** button.
-- **Dataset builder:** add real and synthetic raw bin folders, scan their expandable trees and select files. Set the processing GPU, file loading workers, history samples, future transitions, timestep, stride, **Windows per output bin**, splits and output folder, then **Review selected bins** and **Build dataset**. Every build writes inside `<chosen folder>/processed/{sim|real}/{terrain}/{train|test|valid}/`; the live output preview shows the layout. Validation files use the folder name `valid`. Output bins default to 10,000 windows; the shape hint shows `[10000, history + future, 42]`, and the final bin for each terrain/source/split may be smaller. This controls processed windows per file; synthetic generation's batch size controls trajectories per raw file. Saved synthetic splits are preserved; new real recordings are split as whole sessions. Preview split counts are estimated windows, not timesteps; the preview states the samples per window and window stride. Timestep mismatches are reported, without resampling. Standalone bins support explicit layout/timestep/environment overrides. The output can be loaded by the existing `FKDDataset` and training commands; set your training configuration's `datasets` paths to this output. The build starts in a dedicated tmux session; the **Dataset builds** dashboard shows device, session/attach command, window/bin progress, elapsed time, remaining time and errors, including after a GUI restart. Multiple builds can use distinct output folders and selected GPUs. No training starts from this tab.
+- **Dataset builder:** add real and synthetic raw bin folders, scan their expandable trees and select files. Set the processing GPU, file loading workers, history samples, future transitions, timestep, stride, **Windows per output bin**, splits and output folder, then **Review selected bins** and **Build dataset**. Every build writes inside `<chosen folder>/processed/{sim|real}/{terrain}/{train|test|valid}/`; the live output preview shows the layout. Validation files use the folder name `valid`. Output bins default to 10,000 windows; the shape hint shows `[10000, history + future, 42]`, and the final bin for each terrain/source/split may be smaller. This controls processed windows per file; synthetic generation's batch size controls trajectories per raw file. Saved synthetic splits are preserved; new real recordings are split as whole sessions. Preview split counts are estimated windows, not timesteps; the preview states the samples per window and window stride. Timestep mismatches are reported, without resampling. Standalone bins support explicit layout/timestep/environment overrides. The output can be loaded by the existing `FKDDataset` and training commands; set your dataset factory's `dataset_path` folders to this output. The build starts in a dedicated tmux session; the **Dataset builds** dashboard shows device, session/attach command, window/bin progress, elapsed time, remaining time and errors, including after a GUI restart. Multiple builds can use distinct output folders and selected GPUs. No training starts from this tab.
 - **Dataset viewer:** use the expandable processed-folder explorer to **Copy path** or **Add folder** to the dataset/test dataset lists. Each editable folder row has WheeledLab's `num_runs` (bin files) and `num_trajectories` (processed windows) limits; `-1` means all. File selection precedes trajectory limits. Without a selection seed, the first sorted files/windows are selected; with `file_selection_seed`, selection follows WheeledLab's `torch.randperm`, seed + folder index, and sorted selected window offsets. **Load dataset** applies the visible mix to the shared `FKDDataset` and reports selected/available windows for each folder. Choose the dataset or test dataset list and a split filter; explicit train/test/valid folders can use **All / explicit folders**. **Shuffle** permutes the selected mix for indexed viewing and Previous/Next; its optional seed is separate from subset selection, and the display retains the original bin/window/index. Nothing rewrites bins or starts training. To export, choose a full path and `.py` filename, then **Save dconfig.py**. The file defines `dataloader_config() -> DataloaderConfig` with WheeledLab's exact field names and an OptCar import; its config dataclass is copied from WheeledLab. Test paths and limits, dtype/device and the expandable loader options are included. History/future remain outside `DataloaderConfig`, as in WheeledLab; a separate `viewer_data` literal retains those settings for GUI round trips. **Load config** restores Python factory settings and paths without executing the file. Existing training YAML/JSON and processed metadata remain readable. Generated `dataset_config.py` metadata is read-only. A trajectory means one `[history + future, 42]` processed window, including vehicle ID. The stored world/body/delta states and WheeledLab sample slicing remain unchanged. With history 250 and future 50 transitions, there are 300 samples, and WheeledLab's future horizon is 51 because it includes the current sample. Viewing uses memory mapping and reads one selected window at a time; shuffled order and selection never modify the source bins.
 - **Transformer evaluation:** existing checkpoint and trajectory comparison.
 
@@ -143,41 +143,52 @@ Repeat for other terrains. Use separate bags for each split. `configs/datagen.ya
 
 ## Train
 
-Supply generalist data in `datasets/generalist_dataset/` first; it is initially empty. See [dataset format](docs/dataset_format.md) for existing FKD bins.
+Training uses OptCar-local copies of WheeledLab's FKD CTX/FiLM implementation, Lightning backbone, normalization, trajectory losses and optimizer/scheduler. It does not import WheeledLab. The active configuration factories are separate:
+
+- `configs/corl26_model.py`: the reference delta model, **321,219 total/trainable parameters**, 64-dimensional embeddings, 4 attention heads, 2 context-encoder layers, 2 decoder layers, and both FiLM projections per decoder layer. History has 250 samples and future has 50 samples, including the current sample. Timestep is 0.02 s.
+- `configs/corl26_learning.py`: the saved reference run's 500 epochs, batch size 4096, AdamW learning rate 0.001 and weight decay 0.01, 1% warmup followed by the original cosine scheduler, and disabled gradient clipping. Its loss is `0.005 * absolute-position MSE + 1.0 * delta-position MSE + 0.3 * delta-quaternion geodesic`. Non-quaternion values retain their original units; quaternion groups use the reference unit normalization.
+- Your dataset factory, such as `configs/corl26_data.py`, exported by Dataset viewer: folders and per-folder file/window limits. This file is user-created and is not bundled with a machine-specific dataset mix. Training fills an unset file-selection seed from the learning seed, as WheeledLab does.
+
+Run from the OptCar directory. On servers without a display, set `export MPLBACKEND=Agg` so validation plots render without a desktop. This checks the setup and checkpoint without starting training or writing a run:
 
 ```bash
-# Generalist → specialist (real + synthetic data)
-optcar train --config configs/train_generalist.yaml --device cuda
-optcar train --config configs/train_specialist.yaml --device cuda
+python3 scripts/train.py \
+  --dataset-config configs/corl26_data.py \
+  --model-config configs/corl26_model.py \
+  --learning-config configs/corl26_learning.py \
+  --device cuda:9 \
+  --checkpoint /path/to/reference/run/initial.ckpt \
+  --check
 ```
 
-Final checkpoint: `checkpoints/film_specialist/specialist_best.ckpt`.
-
-For cross-attention, use a separate checkpoint pair:
+Start a new run by replacing `--check` with a fresh output directory:
 
 ```bash
-optcar train --config configs/train_generalist.yaml --architecture cross_attention \
-  --output checkpoints/cross_generalist --device cuda
-optcar train --config configs/train_specialist.yaml --architecture cross_attention \
-  --checkpoint checkpoints/cross_generalist/generalist_best.ckpt \
-  --output checkpoints/cross_specialist --device cuda
+python3 scripts/train.py \
+  --dataset-config configs/corl26_data.py \
+  --model-config configs/corl26_model.py \
+  --learning-config configs/corl26_learning.py \
+  --device cuda:9 \
+  --checkpoint /path/to/reference/run/initial.ckpt \
+  --output checkpoints/corl26_delta
 ```
 
-## Evaluate
+`optcar train` accepts the same options. `--checkpoint` copies starting weights and resets optimizer/scheduler for the new dataset. The reference run's `initial.ckpt` repeats its starting weights; its `last.ckpt` starts further fine-tuning from its final weights. Omit `--checkpoint` for fresh random initialization. `--resume /path/to/run/last.ckpt` continues an interrupted run with its saved config factories. Reapply any original CLI seed/device/batch/epoch overrides when resuming; effective settings and arguments are recorded in `run_config.json`, while factory copies retain their original source as in WheeledLab. Each run saves `model_config.py`, `learning_config.py`, `dl_config.py`, `initial.ckpt`, per-epoch checkpoints and `last.ckpt`. Local TensorBoard logging is enabled. WandB is included in the single requirements file; run `wandb login` and pass `--wandb --wandb-project-name optcar` to enable cloud logging. Validation/test plots are copied from WheeledLab and go to both active loggers: position, quaternion, velocity/steering command panels and the bird's-eye trajectory overlay. `no_plot=False` enables them, and the dataset factory controls the epoch/batch plotting frequencies.
 
-```bash
-optcar evaluate --checkpoint checkpoints/film_specialist/specialist_best.ckpt \
-  --datasets datasets/syn_data/terrains --real-only
-```
+The training loader shares the existing binary reader/file selection, then uses WheeledLab's exact body/world/delta sample slices. Existing OptCar windows contain 300 physical rows; their metadata remains authoritative for disk reading. Training uses the first 299 rows to match `250 + 50 - 1`: history rows 0–249 and future rows 249–298. The current row is shared and the first future delta is zero position/identity quaternion. Existing bins do not need rebuilding. Original 299-row WheeledLab bins remain supported. The reference model's 50 future samples span 49 transitions (0.98 s).
 
-Use `optcar <command> --help` for options, including training resume and prediction export.
+Recorded input parents are expanded to their train folders for the main list and test folders for the test list. Use recorded train folders in the main list and test folders in the test list; Dataset viewer can also browse validation folders. WheeledLab's seeded 90%/10% random split is applied over the selected main windows, followed by ordinary epoch shuffle. Test folders are evaluated separately. Default loading workers are 4 for training and 4 for validation; use `--train-num-workers` and `--val-num-workers` to change them. The builder's 16 file-loading threads and 10,000 windows per output bin are separate settings from training batch size 4096.
+
+The copied WheeledLab source currently reports zero for `val/learn/loss_epoch`, because weighted training-loss accumulation is enabled only during training. This behavior is preserved. Its default `best` checkpoint therefore does not reliably rank validation quality; use the saved physical/component metrics and epoch/last checkpoints when reviewing the run. No calibration, generation, dataset building or training starts automatically during setup.
+
+The previous combined `train_generalist.yaml`/`train_specialist.yaml` recipes are rejected by the training command. Existing GUI prediction/evaluation tools still handle their earlier OptCar checkpoint format; use the reference training validation path for the new Lightning checkpoints.
 
 ## Code
 
 - `optcar/models/`: `dynamic_bicycle.py`, `dbm_calibration.py`, `fkd_transformer.py`.
 - `optcar/datagen/`: `dbm_to_dataset.py`, `rosbag_to_dataset.py`.
-- `optcar/dataset.py`: binary format, writer, loader, and balanced sampling.
-- `optcar/train.py`, `optcar/evaluate.py`: training and evaluation.
+- `optcar/dataset.py`: binary format, writer and shared processed-bin reader/selection.
+- `optcar/fkd_train.py`, `optcar/fkd_dataloader.py`, `optcar/models/fkd/`: WheeledLab-compatible model training; `optcar/train.py` forwards to it. `optcar/evaluate.py` handles earlier OptCar checkpoints.
 - `optcar/gui/`, `optcar/utils/`: web interface and shared helpers.
 
 Synthetic collection reuses copies of WheeledLab’s `ParametricOpenLoopController`, `ParamRandomizer`, parameter dataclasses, `State_struct_torch`, and `DataCollector`. The analytical environment reset/step methods and Torch RK4 equations follow the reference. DBM parameters come from your saved terrain preset; zero initial velocity, grid spacing, action normalization and the default 10 m/s² lateral acceleration cap match its analytical simulator. Parameter values are shared across each batch; the default keeps them fixed across runs, with `commands.resample_params_each_run` available as in WheeledLab. `commands.parameter_ranges` accepts the reference’s uniform/normal numeric ranges for supported physical/control parameters. A run with 32 trajectories, 10 seconds and dt=0.02 saves 32 × 500 × 15 × 4 = 960,000 bytes (937.5 KiB). Ten runs produce ten files and 320 trajectories.

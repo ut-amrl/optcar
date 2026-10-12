@@ -9,7 +9,7 @@ datasets/
     sim/<run>/                        # DBM episodes
 ```
 
-Each generated run contains `manifest.json`, `raw/*.bin`, and `processed/data/*.bin`. The manifest records episode splits, shapes, parameters, and seeds. Keep complete bags/episodes in one split. Repeat generation with the same settings to resume; use `--run <name>` when changing settings.
+Synthetic generation writes raw bins and metadata. Dataset builder writes processed bins under `<chosen folder>/processed/{sim|real}/{terrain}/{train|test|valid}/`. Each source/terrain manifest records physical shapes and recording splits. Earlier combined generation/writer outputs can also contain `processed/data/*.bin` and remain readable.
 
 Processed bins are float32 `[windows, history_steps + future_steps, 42]`:
 
@@ -21,9 +21,9 @@ Processed bins are float32 `[windows, history_steps + future_steps, 42]`:
 | 39–40 | Commanded velocity (m/s), steering (rad) |
 | 41 | Vehicle ID |
 
-Quaternions use `w,x,y,z`. Command `t` advances state `t` to `t+1`. Raw bins contain world state plus commands (15 features); the final command is a zero placeholder. For Twist command topics, `angular.z` means steering angle.
+Quaternions use `w,x,y,z`. Raw bins contain world state plus commands (15 features). Imported bags retain commands at their recorded samples; synthetic bins use WheeledLab's post-step state/command logging. These raw stages retain the final recorded command. For Twist command topics, `angular.z` means steering angle. The optional vehicle ID is outside the 41 state/action channels.
 
-OptCar's `future_steps=50` counts transitions. The equivalent WheeledLab FKD `future_horizon` is **51**, because it includes the current state. With 250 history steps, a window therefore has 300 rows. Existing 299-row FKD windows require `future_steps=49` in both data and model configs.
+Dataset builder's `future_steps=50` counts transitions, so its saved metadata has `future_horizon=51` and 300 physical rows with 250 history samples. The reference **model** config uses `future_horizon_steps=50`, including the current sample: 299 logical rows, history 0–249 and future 249–298. The training loader reads each bin using its physical metadata, then takes the first 299 rows. Both existing 300-row OptCar bins and original 299-row WheeledLab bins work with the same reference H250/F50 model; no rebuilding or reshaping files is required. The first future delta has zero position and identity quaternion.
 
 ## Existing generalist bins
 
@@ -40,4 +40,4 @@ Either place OptCar datasets with manifests under `generalist_dataset/`, or prov
 }
 ```
 
-Match these dimensions and frame conventions to your files. Set `session_disjoint_splits` only after splitting by complete source sessions. Normalization uses training data only and is retained during specialist training.
+Match these physical dimensions and frame conventions to your files. Set `session_disjoint_splits` only after splitting by complete source sessions. Training uses a separate `dataloader_config()` factory with dataset/test paths and per-folder file/window limits. Recorded parent folders resolve to their train/test files; the copied WheeledLab training entry applies its seeded 90%/10% window split to the selected main data. The reference CORL26 model leaves non-quaternion values unchanged and unit-normalizes quaternion groups.
