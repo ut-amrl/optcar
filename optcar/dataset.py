@@ -1,5 +1,5 @@
 """FKD binary format, episode writer, memory-mapped loader, and terrain sampler."""
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from collections import OrderedDict, defaultdict, deque
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -410,7 +410,7 @@ class DatasetWriter:
 
 
 class FKDDataset(Dataset):
-    def __init__(self, roots, config, split="train", sources=None, allow_wheeledlab=False):
+    def __init__(self, roots, config, split="train", sources=None, allow_wheeledlab=False, dl_config=None, is_test_set=False):
         if isinstance(roots, (str, Path)):
             roots = [roots]
         if split not in ("train", "val", "test", "all"):
@@ -420,6 +420,7 @@ class FKDDataset(Dataset):
         self.cache = OrderedDict()
         self.dataset_paths = roots
         self.dataset_file_mapping, self.shard_splits = [], []
+        self._global_indices = None
         self._seen_files = set()
         documents = {}
         sessions = {}
@@ -519,6 +520,97 @@ class FKDDataset(Dataset):
                 raise ValueError(f"DBM calibration used held-out session {session}")
         if not self.shards:
             raise ValueError(f"No {split} windows found in {roots}. Supply data with complete-session splits.")
+        self.selection_summary = []
+        if dl_config is not None:
+            self._select_dataloader_trajectories(dl_config, is_test_set)
+
+    def _select_dataloader_trajectories(self, dl_config, is_test_set):
+        """WheeledLab FKD file selection followed by per-dataset trajectory caps.
+
+        Keep its sorted files, seed + dataset index, torch.randperm and sorted
+        selected offsets. Only the index map changes; bins remain memory mapped.
+        """
+        from optcar.dataloader_config import DataloaderConfig
+        if not isinstance(dl_config, DataloaderConfig):
+            raise ValueError("Expected DataloaderConfig")
+        prefix = "test_" if is_test_set else ""
+        runs = getattr(dl_config, prefix + "num_runs")
+        limits = getattr(dl_config, prefix + "num_trajectories")
+        def per_dataset(value, name, nullable=False):
+            if value is None and nullable:
+                return [None] * len(self.dataset_paths)
+            if isinstance(value, int) and not isinstance(value, bool):
+                value = [value] * len(self.dataset_paths)
+            if not isinstance(value, list) or len(value) != len(self.dataset_paths):
+                raise ValueError(f"{name} must match the number of dataset paths")
+            if any((item is None and not nullable) or
+                   (item is not None and (isinstance(item, bool) or not isinstance(item, int) or item < -1))
+                   for item in value):
+                raise ValueError(f"{name} must contain integers >= 0 or -1 for all")
+            return value
+        runs = per_dataset(runs, prefix + "num_runs")
+        limits = per_dataset(limits, prefix + "num_trajectories", nullable=True)
+        seed = dl_config.file_selection_seed
+        if seed is not None and (isinstance(seed, bool) or not isinstance(seed, int) or seed < 0):
+            raise ValueError("file_selection_seed must be a nonnegative integer or None")
+        if dl_config.dtype != torch.float32 or dl_config.include_dbm_params or dl_config.is_cmd_vel_in_data:
+            raise ValueError("This processed loader supports the standard 42-column float32 layout")
+        selected_shards, selected_mapping, selected_splits = [], [], []
+        for dataset_idx, root in enumerate(self.dataset_paths):
+            indices = sorted((i for i, owner in enumerate(self.dataset_file_mapping) if owner == dataset_idx),
+                             key=lambda i: str(self.shards[i][0]))
+            available = sum(self.shards[i][1][0] for i in indices)
+            if runs[dataset_idx] != -1:
+                desired = max(0, min(runs[dataset_idx], len(indices)))
+                if seed is None:
+                    indices = indices[:desired]
+                else:
+                    g = torch.Generator().manual_seed(seed + dataset_idx)
+                    indices = [indices[i] for i in torch.randperm(len(indices), generator=g)[:desired].tolist()]
+            self.selection_summary.append({"path": str(root), "available": available,
+                                           "available_files": self.dataset_file_mapping.count(dataset_idx),
+                                           "files": len(indices), "selected": 0})
+            for i in indices:
+                selected_shards.append(self.shards[i])
+                selected_mapping.append(dataset_idx)
+                selected_splits.append(self.shard_splits[i])
+        self.shards, self.dataset_file_mapping, self.shard_splits = selected_shards, selected_mapping, selected_splits
+        self.ends = np.cumsum([shard[1][0] for shard in self.shards]).tolist()
+        # Adapted from WheeledLab FKDDataset._apply_trajectory_limits.
+        totals = [sum(shard[1][0] for shard, owner in zip(self.shards, self.dataset_file_mapping)
+                      if owner == dataset_idx) for dataset_idx in range(len(limits))]
+        desired_counts = [total if desired is None or desired < 0 else min(desired, total)
+                          for desired, total in zip(limits, totals)]
+        for summary, desired in zip(self.selection_summary, desired_counts):
+            summary["selected"] = desired
+        if not self.shards or not sum(desired_counts):
+            raise ValueError("No trajectories selected; increase the file or trajectory limits")
+        if desired_counts == totals:
+            return
+        selected_indices = []
+        for dataset_idx, desired in enumerate(desired_counts):
+            file_indices = [i for i, owner in enumerate(self.dataset_file_mapping) if owner == dataset_idx]
+            counts = [self.shards[i][1][0] for i in file_indices]
+            total_dataset = sum(counts)
+            starts = [self.ends[i - 1] if i else 0 for i in file_indices]
+            if desired == total_dataset:
+                for start, count in zip(starts, counts):
+                    selected_indices.extend(range(start, start + count))
+            elif seed is None:
+                remaining = desired
+                for start, count in zip(starts, counts):
+                    take = min(remaining, count)
+                    selected_indices.extend(range(start, start + take))
+                    remaining -= take
+            else:
+                g = torch.Generator().manual_seed(seed + dataset_idx)
+                offsets = torch.randperm(total_dataset, generator=g)[:desired].tolist()
+                offsets.sort()
+                dataset_cum = [0, *np.cumsum(counts).tolist()]
+                for offset in offsets:
+                    pos = bisect_right(dataset_cum, offset) - 1
+                    selected_indices.append(starts[pos] + offset - dataset_cum[pos])
+        self._global_indices = selected_indices
 
     def _append(self, path, shape, source, terrain, dataset_idx=0, split=None):
         path = Path(path).resolve()
@@ -536,13 +628,15 @@ class FKDDataset(Dataset):
             self.shard_splits.append(split)
 
     def __len__(self):
-        return self.ends[-1]
+        return len(self._global_indices) if self._global_indices is not None else self.ends[-1]
 
     def locate_window(self, index):
         """Locate a global trajectory index using WheeledLab's file ordering."""
         index = operator.index(index)
         if not 0 <= index < len(self):
             raise IndexError(index)
+        if self._global_indices is not None:
+            index = self._global_indices[index]
         shard = bisect_right(self.ends, index)
         path, shape, source, terrain = self.shards[shard]
         start = self.ends[shard - 1] if shard else 0
@@ -602,7 +696,13 @@ class TerrainSampler(Sampler):
         grouped = defaultdict(list)
         previous = 0
         for shard, end in zip(dataset.shards, dataset.ends):
-            grouped[(shard[2], shard[3])].append((previous, end - previous))
+            start, stop = previous, end
+            if dataset._global_indices is not None:
+                # Caps expose selected-window indices to every sampler.
+                start = bisect_left(dataset._global_indices, previous)
+                stop = bisect_left(dataset._global_indices, end)
+            if stop > start:
+                grouped[(shard[2], shard[3])].append((start, stop - start))
             previous = end
         if not 0 < real_fraction < 1:
             raise ValueError("real_fraction must lie strictly between zero and one")

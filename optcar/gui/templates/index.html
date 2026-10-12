@@ -187,23 +187,43 @@
 </main>
 </div>
 <div id="dataset-viewer-workspace" class="workspace dataset-viewer-workspace" hidden>
-<aside aria-label="Dataset viewer settings">
-  <section><span class="eyebrow">PROCESSED DATA</span><h2>Inspect training windows.</h2>
-    <label>Viewer config path<input id="dataset-viewer-config" placeholder="/full/path/to/viewer.yaml"></label>
-    <div class="two"><button id="dataset-viewer-config-load" class="secondary">Load config</button><button id="dataset-viewer-config-save" class="secondary">Save config</button></div>
-    <p class="hint">Save directories and settings together in a YAML or JSON file at this exact path. Legacy dataset_config.py can load window settings.</p>
-    <label>Dataset directories<textarea id="dataset-viewer-roots" rows="4" placeholder="/full/path/to/processed/dataset&#10;/full/path/to/another/dataset"></textarea></label>
-    <p class="hint">One directory per line. Trajectory indices span all selected files.</p>
+<aside class="dataset-browser-pane" aria-label="Processed folder explorer">
+  <section><span class="eyebrow">FOLDER EXPLORER</span><h2>Browse processed bins.</h2>
+    <label>Browse folder<input id="dataset-browser-root" placeholder="/full/path/to/processed"></label>
+    <div class="two"><button id="dataset-browser-browse" class="secondary">Browse folder</button><button id="dataset-browser-up" class="secondary">↑ Parent</button></div>
+    <label>Add folders to<select id="dataset-browser-target"><option value="dataset">Dataset</option><option value="test">Test dataset</option></select></label>
+    <div id="dataset-browser-tree" class="bin-tree">Enter a folder to browse its subfolders and bins.</div>
+    <p id="dataset-browser-status" class="hint" role="status">Copy a folder path or add it directly to the setup.</p>
+  </section>
+</aside>
+<aside class="dataset-setup-pane" aria-label="Dataset viewer settings">
+  <section><span class="eyebrow">DATALOADER CONFIG</span><h2>Choose your dataset mix.</h2>
+    <label>Config path and filename<input id="dataset-viewer-config" placeholder="/full/path/to/dconfig.py"></label>
+    <div class="two"><button id="dataset-viewer-config-load" class="secondary">Load config</button><button id="dataset-viewer-config-save" class="secondary">Save dconfig.py</button></div>
+    <p class="hint">WheeledLab's dataloader_config() format, using OptCar imports.</p>
+    <div class="section-heading"><strong class="muted">Dataset folders</strong><button id="dataset-viewer-add" class="secondary">+ Folder</button></div>
+    <div id="dataset-viewer-datasets" class="viewer-folder-rows"></div>
+    <details id="dataset-viewer-test-section"><summary>Test dataset folders</summary>
+      <div id="dataset-viewer-test-datasets" class="viewer-folder-rows"></div>
+      <button id="dataset-viewer-test-add" class="secondary wide">+ Test folder</button>
+    </details>
+    <label>Selection seed<input id="dataset-viewer-seed" type="number" min="0" step="1" placeholder="Empty: first trajectories"></label>
+    <p class="hint">Per-folder limits count processed windows. -1 means All. A seed selects a reproducible subset.</p>
+    <div class="two"><label>View dataset<select id="dataset-viewer-set"><option value="dataset">Dataset</option><option value="test">Test dataset</option></select></label><label>Split filter<select id="dataset-viewer-split"><option value="all">All / explicit folders</option><option value="train">Training</option><option value="val">Validation</option><option value="test">Test</option></select></label></div>
     <div class="two"><label>History samples<input id="dataset-viewer-history" type="number" min="2" step="1" value="250"></label><label>Future transitions<input id="dataset-viewer-future" type="number" min="1" step="1" value="50"></label></div>
-    <div class="two"><label>Timestep (s)<input id="dataset-viewer-dt" type="number" min="0.000001" step="0.001" value="0.02"></label><label>Split<select id="dataset-viewer-split"><option value="train">Training</option><option value="val">Validation</option><option value="test">Test</option><option value="all">All splits</option></select></label></div>
+    <label>Timestep · sim_dt (s)<input id="dataset-viewer-dt" type="number" min="0.000001" step="0.001" value="0.02"></label>
+    <p class="hint">Horizons come from the model or bin metadata; they are kept outside DataloaderConfig.</p>
+    <details><summary>WheeledLab loader settings</summary><div id="dataset-viewer-options" class="parameter-grid"></div></details>
     <button id="dataset-viewer-load" class="primary wide">Load dataset</button>
+    <div id="dataset-viewer-selection" class="viewer-selection"></div>
     <dl id="dataset-viewer-metadata" class="dataset-viewer-metadata" hidden></dl>
   </section>
   <section><span class="eyebrow">TRAJECTORY</span>
     <label>Trajectory index (0-based)<input id="dataset-viewer-index" type="number" min="0" step="1" value="0" disabled></label>
     <div class="two"><button id="dataset-viewer-previous" class="secondary" disabled>← Previous</button><button id="dataset-viewer-next" class="secondary" disabled>Next →</button></div>
-    <button id="dataset-viewer-show" class="secondary wide" disabled>Show trajectory</button>
-    <p class="hint">Body coordinates use the saved current sample, at history − 1. Moving the sample slider keeps that frame fixed.</p>
+    <div class="two"><button id="dataset-viewer-show" class="secondary" disabled>Show trajectory</button><button id="dataset-viewer-shuffle" class="secondary" disabled>Shuffle</button></div>
+    <label>Shuffle seed<input id="dataset-viewer-shuffle-seed" type="number" min="0" step="1" placeholder="Empty: a new order each click"></label>
+    <p class="hint">Shuffle changes viewing order across the selected mix. The body frame stays anchored at history − 1.</p>
   </section>
 </aside>
 <main>

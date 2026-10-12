@@ -25,6 +25,7 @@ from optcar.utils.file_io import read_config, safe_name, terrain_path, write_yam
 from optcar.utils.math import qinverse_torch, qrotate_torch, yaw_from_quat_torch
 from optcar.utils.devices import available_devices
 from optcar.gui.dataset_viewer import DatasetViewer, load_viewer_config, save_viewer_config
+from optcar.gui.dataloader_setup import browse_processed_folder, default_loader_values, save_python_setup
 
 
 def create_app(dataset_root="datasets", bag_root=None):
@@ -148,7 +149,25 @@ def create_app(dataset_root="datasets", bag_root=None):
     def open_processed_dataset():
         payload = request.get_json()
         return dataset_viewer.open(payload.get("roots"), payload.get("config_path"),
-                                   payload.get("split"), payload.get("data"))
+                                   payload.get("split"), payload.get("data"),
+                                   payload.get("dl_config"), payload.get("is_test_set", False))
+
+    @app.post("/api/dataset-viewer/browse")
+    @api
+    def browse_processed_dataset():
+        payload = request.get_json()
+        return browse_processed_folder(payload["path"], payload["data"])
+
+    @app.post("/api/dataset-viewer/shuffle")
+    @api
+    def shuffle_processed_dataset():
+        payload = request.get_json()
+        return dataset_viewer.shuffle(payload.get("dataset_id"), payload.get("seed"))
+
+    @app.get("/api/dataset-viewer/defaults")
+    @api
+    def dataloader_defaults():
+        return {"dl_config": default_loader_values()}
 
     @app.post("/api/dataset-viewer/config/load")
     @api
@@ -159,6 +178,8 @@ def create_app(dataset_root="datasets", bag_root=None):
     @api
     def save_processed_dataset_config():
         payload = request.get_json()
+        if "dl_config" in payload:
+            return save_python_setup(payload.get("path"), payload["dl_config"], payload.get("data"))
         return save_viewer_config(payload.get("path"), payload.get("roots"),
                                   payload.get("data"), payload.get("split", "train"))
 

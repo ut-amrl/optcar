@@ -17,6 +17,7 @@ import yaml
 from optcar.dataset import DataConfig, FKDDataset
 from optcar.utils.file_io import read_config, write_json, write_yaml
 from optcar.utils.math import yaw_from_quat_torch
+from optcar.gui.dataloader_setup import load_python_setup, validate_loader_config
 
 
 def _metadata_values(path):
@@ -167,6 +168,13 @@ def _metadata_roots(path, doc):
 def load_viewer_config(path):
     """Load editable dimensions and ordered dataset paths without reading bins."""
     path = _viewer_config_path(path)
+    if path.suffix.lower() == ".py":
+        try:
+            tree = ast.parse(path.read_text(), filename=str(path))
+        except SyntaxError as exc:
+            raise ValueError(f"Cannot read dataset config {path}: {exc}") from exc
+        if any(isinstance(node, ast.FunctionDef) and node.name in ("dataloader_config", "get_dataloader_config", "config") for node in tree.body):
+            return load_python_setup(path)
     config = read_dataset_config(path)
     doc = {} if path.suffix.lower() == ".py" else read_config(path)
     if "datasets" in doc:
@@ -215,12 +223,17 @@ class DatasetViewer:
     """Bounded datasets/memmaps, with one copied window returned per request."""
     def __init__(self):
         self.datasets = OrderedDict()
+        self.orders = {}
         self.lock = threading.RLock()
 
-    def open(self, roots=None, config_path=None, split=None, data=None):
+    def open(self, roots=None, config_path=None, split=None, data=None, dl_config=None, is_test_set=False):
         if data is None:
             loaded = load_viewer_config(config_path)
+            if loaded["data"] is None:
+                raise ValueError("This loader config has no saved horizons; enter history and future from the model config")
             config = DataConfig(**loaded["data"])
+            if dl_config is None:
+                dl_config = loaded.get("dl_config")
             if roots is None or roots == [] or (isinstance(roots, str) and not roots.strip()):
                 roots = loaded["roots"]
             config_path = loaded["config_path"]
@@ -228,20 +241,44 @@ class DatasetViewer:
         else:
             config = _editable_data_config(data)
             config_path = str(_viewer_config_path(config_path)) if config_path else None
+        if not isinstance(is_test_set, bool):
+            raise ValueError("is_test_set must be true or false")
+        loader = validate_loader_config(dl_config) if dl_config is not None else None
+        if loader is not None:
+            roots = loader.test_dataset_path if is_test_set else loader.dataset_path
+            if loader.sim_dt != config.dt:
+                raise ValueError("Dataloader sim_dt differs from the viewer timestep")
         roots = _viewer_roots(roots)
         for root in roots:
             if not Path(root).is_dir():
                 raise ValueError(f"Dataset directory does not exist: {root}")
         split = _viewer_split("train" if split is None else split)
-        dataset = FKDDataset(roots, config, split=split, allow_wheeledlab=True)
+        dataset = FKDDataset(roots, config, split=split, allow_wheeledlab=True,
+                             dl_config=loader, is_test_set=is_test_set)
         identifier = uuid.uuid4().hex
         with self.lock:
             self.datasets[identifier] = dataset
             while len(self.datasets) > 4:
-                self.datasets.popitem(last=False)
+                expired, _ = self.datasets.popitem(last=False)
+                self.orders.pop(expired, None)
         return {"dataset_id": identifier, "roots": roots, "config_path": config_path,
                 "split": split, "count": len(dataset), "files": len(dataset.shards),
-                "samples": config.window_steps, "features": 42, **asdict(config)}
+                "samples": config.window_steps, "features": 42, "selection": dataset.selection_summary,
+                "is_test_set": is_test_set, "shuffled": False, **asdict(config)}
+
+    def shuffle(self, dataset_id, seed=None):
+        if seed is not None and (isinstance(seed, bool) or not isinstance(seed, int) or seed < 0):
+            raise ValueError("Shuffle seed must be a nonnegative integer or empty")
+        with self.lock:
+            dataset = self.datasets.get(dataset_id)
+            if dataset is None:
+                raise ValueError("Dataset expired; load the dataset again")
+            if seed is None:
+                seed = torch.randint(0, 2 ** 31, ()).item()
+            generator = torch.Generator().manual_seed(seed)
+            self.orders[dataset_id] = torch.randperm(len(dataset), generator=generator)
+            self.datasets.move_to_end(dataset_id)
+            return {"dataset_id": dataset_id, "seed": seed, "count": len(dataset), "shuffled": True}
 
     def sample(self, dataset_id, index):
         try:
@@ -257,13 +294,16 @@ class DatasetViewer:
             if not 0 <= index < len(dataset):
                 raise ValueError(f"Trajectory index must be between 0 and {len(dataset) - 1}")
             self.datasets.move_to_end(dataset_id)
-            location = dataset.locate_window(index)
-            sample = dataset.get_fkd_sample(index)
+            order = self.orders.get(dataset_id)
+            dataset_index = int(order[index]) if order is not None else index
+            location = dataset.locate_window(dataset_index)
+            sample = dataset.get_fkd_sample(dataset_index)
         data = sample["full_data"]
         if not torch.isfinite(data).all():
             raise ValueError(f"Trajectory {index} contains non-finite values in {location['path']}")
         current = dataset.config.history_steps - 1
-        result = {"index": index, **location, "car_number": int(sample["car_number"]),
+        result = {"index": index, "dataset_index": dataset_index, "shuffled": order is not None,
+                  **location, "car_number": int(sample["car_number"]),
                   "current_step": current, "dt": dataset.config.dt,
                   "times": ((torch.arange(len(data), dtype=torch.float64) - current) * dataset.config.dt).tolist(),
                   "world": sample["full_wf_states"].tolist(),

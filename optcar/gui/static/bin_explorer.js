@@ -1,5 +1,39 @@
 // Shared folder tree for the raw viewer and manual DBM workbench.
 window.OptCarBinExplorer = {
+  // Lazy directory browsing reuses the same folder/bin presentation for
+  // processed data, whose files contain windows rather than raw samples.
+  async directory({path, browse, onCopy, onAdd, isCurrent = () => true, label = null}) {
+    const details = document.createElement('details'); details.className = 'bin-folder';
+    const summary = document.createElement('summary'); summary.textContent = label || path;
+    const controls = document.createElement('div'); controls.className = 'viewer-folder-actions';
+    for (const [text, action] of [['Copy path', onCopy], ['Add folder', onAdd]]) {
+      const button = document.createElement('button'); button.className = 'secondary'; button.textContent = text;
+      button.onclick = () => action(path); controls.append(button);
+    }
+    const contents = document.createElement('div'); contents.className = 'bin-folder-contents';
+    details.append(summary, controls, contents);
+    let loaded = false, loading = false;
+    details.addEventListener('toggle', async () => {
+      if (!details.open || loaded || loading) return;
+      loading = true; contents.textContent = 'Reading folder…';
+      try {
+        const result = await browse(path);
+        if (!isCurrent()) return;
+        contents.replaceChildren();
+        for (const folder of result.folders) contents.append(await this.directory({path:folder.path, label:folder.name, browse, onCopy, onAdd, isCurrent}));
+        for (const bin of result.bins) {
+          const item = document.createElement('div'); item.className = 'bin-file';
+          const name = document.createElement('span'); name.textContent = bin.name;
+          const meta = document.createElement('small'); meta.textContent = bin.error || `${bin.trajectories.toLocaleString()} trajectories`;
+          item.title = bin.path; item.append(name, meta); contents.append(item);
+        }
+        if (!result.folders.length && !result.bins.length) contents.textContent = 'No subfolders or bins.';
+        loaded = true;
+      } catch (error) { contents.textContent = error.message; }
+      finally { loading = false; }
+    });
+    return details;
+  },
   expandTo(opened, relativePath) {
     const parts = relativePath.split('/');
     parts.pop();
