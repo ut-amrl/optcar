@@ -1,5 +1,5 @@
 'use strict';
-// Stored FKD states and frame math are unchanged. Selection follows WheeledLab.
+// Index and shuffle the selected dataset without changing stored states.
 const datasetViewerState={dataset:null,sample:null,cursor:0,request:0,busy:false,configBusy:false,options:{},rows:{dataset:[],test:[]},browserRevision:0};
 const datasetViewerStorage='optcar.dataset-viewer.settings';
 const datasetViewerColors={history:'#80cbd3',future:'#e7b17a',anchor:'#8bc99b',cursor:'#edf0f3'};

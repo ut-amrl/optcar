@@ -1,10 +1,7 @@
-"""ROS2 -> WheeledLab raw bins, shared by the CLI and local workbench.
-
-Uses bag timestamps and last-observation (asof) alignment, like WheeledLab's
-ROSBagToRawConverter. No ROS installation or training-window generation needed.
-"""
+"""ROS2 bags to raw bins with uniform, last-observation timestamp alignment."""
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Dict, Optional
 import fcntl
 import json
 import math
@@ -128,10 +125,247 @@ def _values(message, kind, command_type):
     return [v.x, w.z] if kind == "command" else [v.x, v.y, v.z, w.x, w.y, w.z]
 
 
+@dataclass
+class TopicConfig:
+    pose_topic: str = "/super_odometry/pose"
+    velocity_topic: str = "/super_odometry/twist_wf"
+    action_topic: str = "/cmd_vel"
+    cmd_vel_topic: str = "/cmd_vel"
+    command_type: str = "twist_steering"
+
+class ROS2BagAligner:
+    """Align ROS2 bag topics to a uniform time grid."""
+
+    def __init__(
+        self,
+        bag_path: Path,
+        dt: float = 0.02,
+        max_duration: Optional[float] = None,
+        action_shift: float = 0.0,
+        topic_config: Optional[TopicConfig] = None,
+        include_cmd_vel: bool = True,
+    ):
+        self.bag_path = Path(bag_path)
+        self.dt = float(dt)
+        self.max_duration = None if max_duration is None else float(max_duration)
+        self.action_shift = float(action_shift)
+        self.topics = topic_config or TopicConfig()
+        self.include_cmd_vel = include_cmd_vel
+        if self.max_duration is not None and self.max_duration <= 0:
+            raise ValueError("max_duration must be positive when provided.")
+
+    # ------------------------------------------------------------------ #
+    # rosbag helpers
+    # ------------------------------------------------------------------ #
+    def _get_reader(self):
+        # Metadata is validated by OptCar before opening; do not repair sources.
+        from rosbags.rosbag2 import Reader
+        return Reader(self.bag_path)
+
+    def _read_all_topics_once(self) -> Dict[str, Dict[str, np.ndarray]]:
+        """Read the relevant topics once, with the OptCar ROS-independent reader."""
+        progress = getattr(self, "progress", lambda value: None)
+        cancelled = getattr(self, "cancelled", lambda: False)
+        selected = {"pose": self.topics.pose_topic, "twist": self.topics.velocity_topic,
+                    "command": self.topics.action_topic}
+        if self.include_cmd_vel:
+            selected["cmd_vel"] = self.topics.cmd_vel_topic
+        required_topics = set(selected.values())
+        aux_topic = getattr(self, "aux_twist_topic", None)
+        if aux_topic:
+            selected["aux_twist"] = aux_topic
+        streams = {key: {"times": [], "values": [], "frame_ids": set()} for key in selected}
+        store = _typestore()
+        import time
+        with self._get_reader() as reader:
+            connections = [c for c in reader.connections if c.topic in selected.values()]
+            missing = required_topics - {c.topic for c in connections if c.msgcount > 0}
+            if missing:
+                raise ValueError(f"Missing or empty topics: {sorted(missing)}")
+            total = sum(c.msgcount for c in connections)
+            last_update = 0.0
+            progress({"phase": "reading", "messages": 0, "messages_total": total, "bag_fraction": 0.0})
+            for n, (connection, stamp, raw) in enumerate(reader.messages(connections=connections), 1):
+                _check_cancel(cancelled)
+                message = store.deserialize_cdr(raw, connection.msgtype)
+                for key, topic in selected.items():
+                    if connection.topic == topic:
+                        kind = "command" if key == "cmd_vel" else key
+                        try:
+                            value = _values(message, kind, self.topics.command_type)
+                        except AttributeError as exc:
+                            raise ValueError(f"Topic {topic} does not match configured {kind} semantics") from exc
+                        streams[key]["times"].append(stamp * 1e-9)
+                        streams[key]["values"].append(value)
+                        if key == "aux_twist" and hasattr(message, "header"):
+                            streams[key]["frame_ids"].add(message.header.frame_id)
+                now = time.monotonic()
+                if now - last_update >= 0.1 or n == total:
+                    progress({"phase": "reading", "messages": n, "messages_total": total,
+                              "bag_fraction": 0.85 * n / max(1, total)})
+                    last_update = now
+        _check_cancel(cancelled)
+        progress({"phase": "aligning", "messages": total, "messages_total": total, "bag_fraction": 0.87})
+        for key, stream in streams.items():
+            times = np.asarray(stream["times"])
+            values = np.asarray(stream["values"]).reshape(-1, 6) if key == "aux_twist" else np.asarray(stream["values"])
+            if key != "aux_twist" and not np.isfinite(values).all():
+                raise ValueError(f"Nonfinite values in {selected[key]}")
+            order = np.argsort(times, kind="stable")
+            stream["times"], stream["values"] = times[order], values[order]
+        self.max_topic_gaps_s = {key: float(np.max(np.diff(s["times"]))) if len(s["times"]) > 1 else 0.0
+                                 for key, s in streams.items()}
+        data = {
+            self.topics.pose_topic: {"times": streams["pose"]["times"], "values": streams["pose"]["values"]},
+            self.topics.velocity_topic: {"times": streams["twist"]["times"], "values": streams["twist"]["values"]},
+            self.topics.action_topic: {"times": streams["command"]["times"],
+                                      "vel": streams["command"]["values"][:, :1],
+                                      "steer": streams["command"]["values"][:, 1:]},
+        }
+        if self.include_cmd_vel:
+            cmd = streams["cmd_vel"]
+            data.setdefault(self.topics.cmd_vel_topic, {"times": cmd["times"]}).update(
+                throttle=cmd["values"][:, :1], steering=cmd["values"][:, 1:])
+        self._stream_data = streams
+        return data
+
+
+    @staticmethod
+    def _normalize_quaternions(quats: np.ndarray) -> np.ndarray:
+        """Normalize quaternions without flipping signs."""
+        if quats.size == 0:
+            return quats
+        norm = np.linalg.norm(quats, axis=-1, keepdims=True)
+        norm[norm == 0.0] = 1.0
+        return quats / norm
+
+    @staticmethod
+    def _align_asof(
+        source_t: np.ndarray, source_vals: np.ndarray, target_t: np.ndarray
+    ) -> np.ndarray:
+        """Align samples by forward-fill (asof) semantics."""
+        if source_t.size == 0:
+            dim = source_vals.shape[1] if source_vals.ndim > 1 else 1
+            return np.full((len(target_t), dim), np.nan, dtype=float)
+
+        dim = source_vals.shape[1] if source_vals.ndim > 1 else 1
+        output = np.full((len(target_t), dim), np.nan, dtype=float)
+        idx = 0
+        for i, t in enumerate(target_t):
+            while idx + 1 < len(source_t) and source_t[idx + 1] <= t:
+                idx += 1
+            if source_t[idx] <= t:
+                output[i] = (
+                    source_vals[idx]
+                    if source_vals.ndim > 1
+                    else np.array([source_vals[idx]])
+                )
+        return output
+
+    def process(self) -> Dict[str, np.ndarray]:
+        """Convert bag topics into aligned arrays."""
+        all_data = self._read_all_topics_once()
+
+        pose = self._stream_data["pose"]["values"]
+        vel = self._stream_data["twist"]["values"]
+        t_pose = self._stream_data["pose"]["times"]
+        t_vel = self._stream_data["twist"]["times"]
+
+        action_data = all_data[self.topics.action_topic]
+        act_times = action_data["times"]
+        act_vel = action_data["vel"]
+        act_steer = action_data["steer"]
+
+        required = [
+            (self.topics.pose_topic, t_pose),
+            (self.topics.velocity_topic, t_vel),
+            (self.topics.action_topic, act_times),
+        ]
+        for topic_name, times in required:
+            if times.size == 0:
+                raise RuntimeError(f"No messages found for topic: {topic_name}")
+
+        cmd_throttle = cmd_steer = t_cmd = np.array([])
+        if self.include_cmd_vel and self.topics.cmd_vel_topic in all_data:
+            cmd = all_data[self.topics.cmd_vel_topic]
+            t_cmd = cmd["times"]
+            cmd_throttle = cmd["throttle"]
+            cmd_steer = cmd["steering"]
+
+        # Apply optional timestamp shift to the action topic
+        t_act_shift = act_times + self.action_shift if self.action_shift else act_times
+
+        relevant_times = [
+            arr
+            for arr in [
+                t_pose,
+                t_vel,
+                t_act_shift,
+                t_cmd,
+            ]
+            if arr.size > 0
+        ]
+        if not relevant_times:
+            raise RuntimeError("No valid timestamps found in bag.")
+
+        t_start = max(np.min(arr) for arr in relevant_times)
+        t_end = min(np.max(arr) for arr in relevant_times)
+        if self.max_duration is not None:
+            t_end = min(t_end, t_start + self.max_duration)
+        if not np.isfinite(t_start) or not np.isfinite(t_end) or t_end <= t_start:
+            raise RuntimeError(
+                "Empty overlap between topics. Adjust action_shift or bag contents."
+            )
+
+        t_common = np.arange(t_start, t_end, self.dt)
+
+        aligned_pose = self._align_asof(t_pose, pose, t_common)
+        aligned_vel = self._align_asof(t_vel, vel, t_common)
+        aligned_act = self._align_asof(t_act_shift, act_vel, t_common)
+        aligned_steer = self._align_asof(t_act_shift, act_steer, t_common)
+
+        aligned_cmd_throttle = (
+            self._align_asof(t_cmd, cmd_throttle, t_common)
+            if cmd_throttle.size > 0
+            else np.full((len(t_common), 1), np.nan, dtype=float)
+        )
+        aligned_cmd_steer = (
+            self._align_asof(t_cmd, cmd_steer, t_common)
+            if cmd_steer.size > 0
+            else np.full((len(t_common), 1), np.nan, dtype=float)
+        )
+
+        aligned_pose[:, 3:7] = self._normalize_quaternions(aligned_pose[:, 3:7])
+
+        return {
+            "time": t_common,
+            "pose": aligned_pose,
+            "velocity": aligned_vel,
+            "action_velocity": aligned_act.squeeze(-1),
+            "action_steering": aligned_steer.squeeze(-1),
+            "cmd_vel_throttle": aligned_cmd_throttle.squeeze(-1),
+            "cmd_vel_steering": aligned_cmd_steer.squeeze(-1),
+        }
+
+def _stack_rows(data: Dict[str, np.ndarray], include_cmd_vel: bool) -> np.ndarray:
+    """Stack aligned arrays into a single [T, D] matrix."""
+    fields = [
+        data["pose"],  # 7
+        data["velocity"],  # 6
+        data["action_velocity"][:, None],
+        data["action_steering"][:, None],
+    ]
+    if include_cmd_vel:
+        fields.extend(
+            [
+                data["cmd_vel_throttle"][:, None],
+                data["cmd_vel_steering"][:, None],
+            ]
+        )
+    combined = np.concatenate(fields, axis=1)
+    return combined
+
 def read_raw_bag(path, config, progress=lambda value: None, cancelled=lambda: False, *, with_aux=False):
-    # Keep WheeledLab's process(), _align_asof(), normalization and _stack_rows()
-    # as the source of truth for raw conversion. The GUI and CLI share this call.
-    from optcar.datagen.wheeledlab_rosbag_converter import ROS2BagAligner, ROSBagToRawConverter, TopicConfig
     topics = TopicConfig(pose_topic=config.pose_topic, velocity_topic=config.twist_topic,
                          action_topic=config.command_topic, cmd_vel_topic=config.command_topic,
                          command_type=config.command_type)
@@ -149,8 +383,7 @@ def read_raw_bag(path, config, progress=lambda value: None, cancelled=lambda: Fa
         rotation = Rotation.from_quat(data["pose"][:, [4, 5, 6, 3]])
         twist = data["velocity"]
         data["velocity"] = np.concatenate([rotation.apply(twist[:, :3]), rotation.apply(twist[:, 3:])], axis=1)
-    converter = ROSBagToRawConverter(dt=config.dt, include_cmd_vel=config.include_cmd_vel)
-    rows = converter._stack_rows(data).astype("<f4")
+    rows = _stack_rows(data, config.include_cmd_vel).astype("<f4")
     if len(rows) < 2 or not np.isfinite(rows).all():
         raise ValueError("Overlap must contain at least two finite float32 samples")
     progress({"phase": "writing", "bag_fraction": 0.95, "samples": len(rows)})
@@ -298,7 +531,7 @@ def _convert_locked(root, paths, output, config, overwrite, progress, cancelled)
                          "frame": "as recorded; see each bin's aux.frame_ids", "purpose": "diagnostics only"})
         max_steps = max(b["samples"] for b in manifest["bins"].values())
         (output / "metadata/dataset_config.py").write_text(
-            '"""WheeledLab raw dataset configuration generated by OptCar."""\nfrom dataclasses import dataclass\nfrom typing import Optional\n\n@dataclass\nclass DatasetConfig:\n'
+            '"""Raw dataset configuration generated by OptCar."""\nfrom dataclasses import dataclass\nfrom typing import Optional\n\n@dataclass\nclass DatasetConfig:\n'
             f'    num_envs: int = 1\n    num_runs: int = {len(manifest["bins"])}\n    data_dtype: str = "float32"\n    control_dt: float = {config.dt!r}\n    max_steps_per_run: int = {max_steps}\n    sim_dt: Optional[float] = None\n    decimation: Optional[int] = None\n\nconfig = DatasetConfig()\n')
     result = {"output": str(output), "converted": sum(r["status"] == "complete" for r in results),
               "failed": sum(r["status"] == "failed" for r in results), "cancelled": cancelled(), "results": results,

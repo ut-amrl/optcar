@@ -1,5 +1,5 @@
 'use strict';
-// Raw layout and signal groups follow WheeledLab extractor.py / plot_sim_bins.py.
+// Raw layout and signal groups follow extractor.py / plot_sim_bins.py.
 const binState={mode:'bins',scan:null,data:null,current:0,row:null,forward:null,playing:false,zoom:1,pan:[0,0],opened:new Set(),loadVersion:0,frameVersion:0,request:null,actions:null,actionVersion:0};
 const binColors=['#80cbd3','#8bc99b','#e7b17a','#bca0df'];
 const binGroups=[{title:'Position',unit:'m',columns:[0,1,2],labels:['x','y','z']},{title:'Orientation',unit:'quaternion · wxyz',columns:[3,4,5,6],labels:['w','x','y','z']},{title:'Linear velocity',unit:'world · m/s',columns:[7,8,9],labels:['x','y','z']},{title:'Angular velocity',unit:'world · rad/s',columns:[10,11,12],labels:['x','y','z']}];

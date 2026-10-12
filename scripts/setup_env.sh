@@ -35,7 +35,7 @@ import subprocess
 import torch
 from optcar.utils.devices import available_devices
 for module in ("numpy", "scipy", "yaml", "flask", "rosbags", "rich", "joblib", "matplotlib",
-               "lightning", "tensorboard", "tqdm", "wandb", "optcar.models.fkd", "optcar.fkd_train",
+               "lightning", "tensorboard", "tqdm", "wandb", "optcar.models.fkd", "optcar.train",
                "optcar.gui.server", "optcar.datagen.raw_bags", "optcar.datagen.build_dataset",
                "optcar.datagen.generation_jobs", "optcar.train", "optcar.evaluate"):
     importlib.import_module(module)
@@ -55,5 +55,5 @@ for gpu in devices:
 if not devices:
     print("No NVIDIA GPU is available to Torch; the GUI will offer CPU. Check driver and GPU access if a GPU was expected.")
 '
-echo 'Ready: conda activate optcar && python3 web_gui.py'
+echo 'Ready: conda activate optcar && python3 optcar_gui.py'
 echo 'Restart any running OptCar GUI after updating Torch.'

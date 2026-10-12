@@ -1,8 +1,4 @@
-"""WheeledLab FKD training samples over OptCar's recorded processed shards.
-
-Selection uses the shared processed loader. Sample slicing below is copied from
-WheeledLab's FKD dataloader; stored windows may include one extra future state.
-"""
+"""FKD training samples over recorded processed shards. Physical windows may include one extra future state."""
 import json
 import operator
 from concurrent.futures import ThreadPoolExecutor
@@ -12,7 +8,7 @@ from typing import Dict, List, Optional
 
 import numpy as np
 import torch
-from torch.utils.data import Dataset, random_split
+from torch.utils.data import Dataset
 from tqdm import tqdm
 
 from optcar.dataloader_config import DataloaderConfig
@@ -72,7 +68,7 @@ class FKDDataset(Dataset):
         if not self.shards:
             raise ValueError(f"No {selected_split} windows found in {self.dataset_paths}")
         self.ends = np.cumsum([shard[1][0] for shard in self.shards]).tolist()
-        # Physical bins remain float32; WheeledLab converts samples to dtype.
+        # Physical bins remain float32; convert each loaded sample to the requested dtype.
         ProcessedDataset._select_dataloader_trajectories(self, replace(dl_config, dtype=torch.float32), is_test_set)
         self.files = [str(shard[0]) for shard in self.shards]
         self.shapes = [shard[1] for shard in self.shards]
@@ -98,7 +94,7 @@ class FKDDataset(Dataset):
                 return idx, np.fromfile(file, dtype=np.float32, count=int(np.prod(shape))).reshape(shape)
 
             load_args = [(i, file, self.shapes[i]) for i, file in enumerate(self.files)]
-            # WheeledLab's preload uses 16 threads.
+            # preload uses 16 threads.
             with ThreadPoolExecutor(max_workers=16) as executor:
                 for idx, data in tqdm(executor.map(load_single_file, load_args),
                                       total=len(self.files), desc="Preloading dataset to RAM"):
@@ -132,7 +128,7 @@ class FKDDataset(Dataset):
                 config = DataConfig(**{key: doc["config"][key] for key in DataConfig.__dataclass_fields__ if key in doc["config"]})
                 self._check_physical_config(config, manifest)
                 folder = manifest.parent if manifest.parent.is_relative_to(root) else root
-                yield ProcessedDataset(folder, config, "all", allow_wheeledlab=True)
+                yield ProcessedDataset(folder, config, "all", allow_headerless=True)
             return
         metadata = None
         for folder in (root, *root.parents):
@@ -147,7 +143,7 @@ class FKDDataset(Dataset):
                   DataConfig(history_steps=self.history_horizon_steps,
                              future_steps=self.future_horizon_steps - 1, dt=self.dl_config.sim_dt))
         self._check_physical_config(config, metadata or root)
-        yield ProcessedDataset(root, config, "all", allow_wheeledlab=True)
+        yield ProcessedDataset(root, config, "all", allow_headerless=True)
 
     def _check_physical_config(self, config, path):
         if config.history_steps != self.history_horizon_steps:
@@ -344,19 +340,3 @@ class FKDDataset(Dataset):
         if not self.preload_to_ram:
             if getattr(self, "_mmaps", None) is None or not isinstance(self._mmaps, list):
                 self._mmaps = [None] * len(self.files)
-
-
-def split_dataset(dataset, train_ratio=0.7, val_ratio=0.2, test_ratio=0.1, seed=42):
-    """Split dataset into train/val/test sets."""
-    dataset_size = len(dataset)
-    train_size = int(train_ratio * dataset_size)
-    val_size = int(val_ratio * dataset_size)
-    test_size = dataset_size - train_size - val_size
-    test_size = int(test_ratio * dataset_size)
-
-    residue = 0
-    if train_size + val_size + test_size < dataset_size:
-        residue = dataset_size - train_size - val_size - test_size
-
-    generator = torch.Generator().manual_seed(seed)
-    return random_split(dataset, [train_size, val_size, test_size, residue], generator=generator)

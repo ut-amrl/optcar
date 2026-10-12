@@ -1,4 +1,4 @@
-"""Local Flask workbench adapted from WheeledLab's DBM/FKD viewers."""
+"""Local Flask workbench adapted from DBM/FKD viewers."""
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from functools import wraps
@@ -34,7 +34,6 @@ def create_app(dataset_root="datasets", bag_root=None):
     from optcar.gui.dbm_tool.server import app as dbm_tool
     app.register_blueprint(dbm_tool, url_prefix="/dbm")
     root = Path(dataset_root).expanduser().resolve()
-    app.config["DBM_CONFIG_ROOT"] = str(root / "dbm")
     (root / "generalist_dataset").mkdir(parents=True, exist_ok=True)
     sessions, jobs = {}, {}
     generation_jobs = GenerationJobs(root)
@@ -337,11 +336,9 @@ def create_app(dataset_root="datasets", bag_root=None):
     @api
     def generate_data():
         payload = request.get_json()
-        if not payload.get("raw_only", True):
-            raise ValueError("Use Dataset builder to create training windows")
         return generation_jobs.start(payload["terrain"], payload.get("run", "default"),
             data=payload.get("data"), commands=payload.get("commands"),
-            runs=payload.get("runs", payload.get("episodes", 10)), batch_size=payload.get("batch_size", 32),
+            runs=payload.get("runs", 10), batch_size=payload.get("batch_size", 32),
             device=payload.get("device", "cpu"),
             preset=load_preset(payload["terrain"], payload["preset_path"]) if payload.get("preset_path") else None)
 

@@ -1,4 +1,4 @@
-"""Edit WheeledLab-style DataloaderConfig factories without executing them."""
+"""Edit Python DataloaderConfig factories without executing them."""
 import ast
 from dataclasses import asdict, fields
 import math
@@ -121,7 +121,7 @@ def read_python_loader(path):
 
 
 def infer_viewer_data(config):
-    """Horizons remain outside DataloaderConfig, as in WheeledLab."""
+    """Horizons remain outside DataloaderConfig."""
     from optcar.gui.dataset_viewer import read_dataset_config
     for root in [*config.dataset_path, *config.test_dataset_path]:
         path = Path(root)
@@ -164,7 +164,7 @@ def save_python_setup(path, values, data=None):
         raise ValueError("Add at least one dataset folder before saving")
     if path.exists():
         read_python_loader(path)  # Never overwrite unrelated Python source/metadata.
-    lines = ["# DataloaderConfig format adapted from WheeledLab.", "import torch",
+    lines = ["# DataloaderConfig factory for OptCar.", "import torch",
              "from optcar.dataloader_config import DataloaderConfig", "",
              "", "def dataloader_config() -> DataloaderConfig:", "    return DataloaderConfig("]
     for key, value in config_values(config).items():
@@ -176,7 +176,7 @@ def save_python_setup(path, values, data=None):
         data = asdict(_editable_data_config(data))
         if data["dt"] != config.sim_dt:
             raise ValueError("Viewer timestep differs from sim_dt")
-        lines.extend(["", "# Viewer horizons; WheeledLab passes these from its model config.",
+        lines.extend(["", "# Viewer horizons; training reads these from its model config.",
                       f"viewer_data = {data!r}", ""])
     atomic_text(path, "\n".join(lines))
     return {"config_path": str(path), "dl_config": config_values(config),

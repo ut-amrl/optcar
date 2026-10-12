@@ -1,4 +1,4 @@
-"""Start the OptCar web GUI with ``python3 web_gui.py``."""
+"""Start the OptCar web GUI with ``python3 optcar_gui.py``."""
 import sys
 
 from optcar.cli import main

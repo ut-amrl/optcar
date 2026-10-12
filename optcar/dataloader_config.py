@@ -1,4 +1,4 @@
-# Adapted from WheeledLab wheeledlab_data/dataloaders/FKD/config.py.
+# Dataset file selection and tensor loading settings.
 """Dataloader configuration for FKD."""
 
 import torch
@@ -40,7 +40,6 @@ class DataloaderConfig:
     plot_test_epoch_freq: int = 15
     plot_test_batch_freq: int = 1
 
-    legacy_data: bool = False
 
     # When True, expect trailing 15 DBM-parameter dims tiled across time in the
     # processed .bin files (feature_dim becomes 41 + 15 = 56). The dataloader

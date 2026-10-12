@@ -1,4 +1,4 @@
-# WheeledLab CORL26 AlphaTruck no-randomization defaults.
+# CORL26 AlphaTruck no-randomization defaults.
 # Save one calibrated copy per terrain.
 params:
   len_f: 0.245

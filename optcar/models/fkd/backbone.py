@@ -27,20 +27,17 @@ try:  # optional dependency
 except:  # pragma: no cover
     wandb = None  # type: ignore
 
-# try:  # prefer WheeledLab config if available
 from .learning_config import SupervisedLearningConfig
 
 from .config import FKD_model_config, resolve_dtype
 
-from optcar.utils.filter import (
+from optcar.utils.math import (
     quaternion_continuity_align,
     quaternion_continuity_align_torchscript,
 )
 from optcar.utils.math import qmultiply_torch, qrotate_torch
-from optcar.utils.frame_transforms import reconstruct_absolute_from_deltas
+from optcar.utils.math import reconstruct_absolute_from_deltas
 
-# qmultiply_torch = getattr(_math_module, "qmultiply_torch")
-# qrotate_torch = getattr(_math_module, "qrotate_torch")
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -78,26 +75,6 @@ def _coerce_learning_config(cfg: Optional[Any]) -> Any:
         return SimpleNamespace(**cfg)  # type: ignore[arg-type]
     return cfg  # type: ignore[return-value]
 
-# class TimerBlock:
-#     def __init__(self, name: str):
-#         # from timing_utils import ENABLE_TIMING  # Avoid circular import
-#         self.name = name
-#         self.enabled = ENABLE_TIMING
-#         self.start_time = None
-
-#     def __enter__(self):
-#         if self.enabled:
-#             torch.cuda.synchronize()
-#             self.start_time = time.time()
-
-#     def __exit__(self, exc_type, exc_val, exc_tb):
-#         if self.enabled and self.start_time is not None:
-#             torch.cuda.synchronize()
-#             elapsed_sec = time.time() - self.start_time
-#             if self.name not in TIMER_RESULTS:
-#                 TIMER_RESULTS[self.name] = []
-#             TIMER_RESULTS[self.name] = elapsed_sec
-
 def set_axes_equal(ax):
     """
     Set equal scales for 3D plots so that x, y, and z axes have the same scale.
@@ -117,28 +94,6 @@ def set_axes_equal(ax):
     ax.set_zlim3d([-0.5, center[2] + max_range])
 
 
-# ENABLE_TIMING = False
-# TIMER_RESULTS: Dict[str, float] = {}
-
-
-# class TimerBlock:
-#     def __init__(self, name: str):
-#         self.name = name
-#         self.enabled = ENABLE_TIMING
-#         self.start_time: Optional[float] = None
-
-#     def __enter__(self):
-#         if self.enabled:
-#             if torch.cuda.is_available():
-#                 torch.cuda.synchronize()
-#             self.start_time = time.time()
-
-#     def __exit__(self, exc_type, exc_val, exc_tb):
-#         if self.enabled and self.start_time is not None:
-#             if torch.cuda.is_available():
-#                 torch.cuda.synchronize()
-#             elapsed_sec = time.time() - self.start_time
-#             TIMER_RESULTS[self.name] = elapsed_sec
 
 
 def _component_names_for_field(field: str, dim: int) -> List[str]:

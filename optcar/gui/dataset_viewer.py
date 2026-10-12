@@ -1,8 +1,4 @@
-"""Processed-window inspection through the same FKD dataset used for training.
-
-Sample slicing follows WheeledLab's FKD loader. Config files are read as data;
-loading its saved Python metadata does not import WheeledLab or execute Python.
-"""
+"""Indexed dataset viewing. Configuration files are parsed as data without execution."""
 import ast
 from collections import OrderedDict
 from dataclasses import asdict
@@ -27,7 +23,7 @@ def _metadata_values(path):
     if len(classes) != 1:
         raise ValueError("Choose the processed metadata/dataset_config.py containing ProcessedDatasetConfig")
     values = {}
-    # WheeledLab's saved metadata contains literal class attributes. Never import
+    # saved metadata contains literal class attributes. Never import
     # the file: its dataloader/training configs may depend on Isaac or ROS.
     for node in classes[0].body:
         if isinstance(node, ast.Assign):
@@ -46,7 +42,7 @@ def _metadata_values(path):
 
 
 def read_dataset_config(path):
-    """Accept OptCar YAML/JSON or WheeledLab's saved processed metadata."""
+    """Accept OptCar YAML/JSON or saved processed metadata."""
     path = Path(path).expanduser().resolve()
     try:
         if path.suffix.lower() == ".py":
@@ -253,7 +249,7 @@ class DatasetViewer:
             if not Path(root).is_dir():
                 raise ValueError(f"Dataset directory does not exist: {root}")
         split = _viewer_split("train" if split is None else split)
-        dataset = FKDDataset(roots, config, split=split, allow_wheeledlab=True,
+        dataset = FKDDataset(roots, config, split=split, allow_headerless=True,
                              dl_config=loader, is_test_set=is_test_set)
         identifier = uuid.uuid4().hex
         with self.lock:

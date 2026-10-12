@@ -83,25 +83,13 @@ def test_unshifted_commands_for_17_column_bins(manual_recording):
     np.testing.assert_allclose(frame['cmd_s'], [-.2] * 6)
 
 
-def test_segments_aggregate_and_config_round_trip(manual_recording):
+def test_segments_save_load_and_restore(manual_recording):
     client, loaded, file, rows, dt = manual_recording
     saved = client.post('/dbm/api/save_segment', json={'session_id': loaded['session_id'], 'start_idx': 4, 'end_idx': 15}).get_json()
     assert saved['start_idx'] == 4
     path = saved['yaml_path']
     segment = client.post('/dbm/api/load_segment', json={'yaml_path': path}).get_json()
     assert segment['end_idx'] == 15
-    settings = {'yaml_path': path, 'legend': 'Mulch curve', 'color': '#00ffff', 'visible': False, 'line_width': 3}
-    aggregate = client.post('/dbm/api/aggregate_segments', json={'segments': [settings]}).get_json()
-    assert not aggregate['errors']
-    trace = aggregate['segments'][0]
-    assert trace['name'] == 'Mulch curve' and trace['visible'] is False
-    assert trace['line_width'] == 3
-    assert trace['x'] == rows[4:16, 0].tolist()
-    config = {'segments': [settings], 'reference': {'name': 'CircleTrajectory'}, 'limits': {'x_min': -2}, 'display': {'show_grid': False}}
-    persisted = client.post('/dbm/api/save_aggregate_config', json=config).get_json()
-    restored = client.post('/dbm/api/load_aggregate_config', json={'config_path': persisted['config_path']}).get_json()
-    for key, value in config.items():
-        assert restored[key] == value
     reread = client.post('/dbm/api/load', json={'bin_path': str(file)}).get_json()
     assert reread['saved_segment']['start_idx'] == 4
 

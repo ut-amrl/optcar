@@ -1,20 +1,75 @@
-"""Randomized open-loop controller for data generation."""
+"""Open-loop control signals for batched data collection."""
 
 from __future__ import annotations
-
+from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING, Optional, Dict, Any
+import torch
+import numpy as np
 import math
 import os
 import time
 from dataclasses import dataclass
-from typing import Iterable, List, Optional, Sequence
+from typing import Iterable, List, Sequence
 
-import numpy as np
-import torch
+if TYPE_CHECKING:
+    from optcar.utils.state_struct import State_struct_torch
 
-try:
-    from .base_controller import BaseController
-except:
-    from base_controller import BaseController
+
+class BaseController(ABC):
+    """Abstract base class for all controllers."""
+    
+    def __init__(self, config, **kwargs):
+        """
+        Initialize base controller.
+        
+        Args:
+            config: Controller configuration object
+            **kwargs: Additional keyword arguments
+        """
+        self.config = config
+        self.cntrl_config = config
+        self.device = config.device if hasattr(config, 'device') else 'cpu'
+        self.dtype = config.dtype if hasattr(config, 'dtype') else torch.float32
+        
+        # Task can be set later
+        self.task = None
+        
+    @abstractmethod
+    def reset(self, seed: Optional[int] = None) -> None:
+        """Reset controller state.
+
+        Args:
+            seed: Optional seed to reset any controller RNG. When None, the
+                controller should keep its previously configured seed behavior.
+        """
+        pass
+    
+    @abstractmethod
+    def compute_control(
+        self, 
+        curr_states: State_struct_torch,
+        **kwargs
+    ) -> tuple[torch.Tensor, Dict[str, Any]]:
+        """
+        Compute control action based on current state.
+        
+        Args:
+            curr_states: Current state of the robot(s)
+            **kwargs: Additional arguments (past_states, past_actions, etc.)
+            
+        Returns:
+            actions: (batch_size, action_dim) control actions
+            info: Dictionary with additional information
+        """
+        pass
+    
+    def set_task(self, task):
+        """Set the current task for the controller."""
+        self.task = task
+    
+    def get_task(self):
+        """Get the current task."""
+        return self.task
 
 
 @dataclass
@@ -180,7 +235,7 @@ class ParametricSignalGenerator:
                 raise ValueError(f"Unknown curve method '{method}'")
             out[mask] = sub.astype(np.float32, copy=False)
 
-        # Optional OptCar mode: retain WheeledLab’s sampled Bézier control points
+        # Optional OptCar mode: retain sampled Bézier control points
         # without stretching each curve to touch both command bounds.
         native_bezier = out.copy() if not self.bezier_full_range else None
         out = self._scale_to_bounds_batch(out)
@@ -288,7 +343,6 @@ class ParametricSignalGenerator:
                 signals = signals * x + coeffs[:, c_idx:c_idx + 1]
             out[mask] = signals
         return out
-
 
 
 class ParametricOpenLoopController(BaseController):
@@ -484,85 +538,3 @@ class ParametricOpenLoopController(BaseController):
         timestamp = int(time.time_ns() & 0xFFFFFFFF)
         return (pid ^ timestamp) & 0xFFFFFFFF
 
-
-def main() -> None:
-    """Visualize representative action sequences for each generator method."""
-
-    import argparse
-
-    try:
-        import matplotlib
-        matplotlib.use("Agg")  # use a headless backend for CLI usage
-        import matplotlib.pyplot as plt
-    except ImportError as exc:  # pragma: no cover - visualization dependency
-        raise SystemExit("matplotlib is required to generate plots") from exc
-
-    parser = argparse.ArgumentParser(description="Visualize parametric open-loop actions")
-    parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducible plots")
-    parser.add_argument("--horizon", type=int, default=512, help="Number of timesteps per sequence")
-    parser.add_argument("--dt", type=float, default=0.02, help="Timestep used for the generators")
-    parser.add_argument(
-        "--output",
-        type=str,
-        default="parametric_signal_gallery.png",
-        help="Filename for the saved plot",
-    )
-    args = parser.parse_args()
-
-    global_seed = args.seed
-    if global_seed is None:
-        global_seed = int(np.random.default_rng().integers(0, np.iinfo(np.uint32).max))
-
-    action_bounds = ((-3.0, 5.0), (-0.5, 0.5))
-    curve_methods = ("fourier",)
-    noise_stds = (1.0, 0.5)
-    offset_fraction = 0.25
-
-    base_rng = np.random.default_rng(global_seed)
-    horizon = int(args.horizon)
-    dt = float(args.dt)
-
-    fig, axes = plt.subplots(len(action_bounds), 1, figsize=(12, 6), sharex=True)
-    if not isinstance(axes, np.ndarray):
-        axes = np.array([axes])
-
-    time_axis = np.linspace(0.0, dt * (horizon - 1), horizon)
-
-    for dim_idx, axis in enumerate(axes):
-        config = SignalGeneratorConfig(
-            min_val=action_bounds[dim_idx][0],
-            max_val=action_bounds[dim_idx][1],
-            noise_std=noise_stds[dim_idx],
-        )
-        for method in curve_methods:
-            method_seed = int(base_rng.integers(0, np.iinfo(np.uint32).max))
-            generator = ParametricSignalGenerator(
-                num_steps=horizon,
-                dt=dt,
-                rng=np.random.default_rng(method_seed),
-                config=config,
-                methods=(method,),
-                max_offset_fraction=offset_fraction,
-            )
-            mean_signal = generator.sample()
-            mean_signal = np.clip(mean_signal, config.min_val, config.max_val)
-            noisy_signal = generator.add_gaussian_noise(mean_signal)
-            axis.plot(time_axis, mean_signal, label=f"{method} base")
-            axis.plot(time_axis, noisy_signal, linestyle="--", alpha=0.7, label=f"{method} noisy")
-        axis.set_ylabel(f"Action {dim_idx}")
-        axis.grid(alpha=0.3)
-
-    axes[-1].set_xlabel("Time [s]")
-    handles, labels = axes[0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="upper center", ncol=3, frameon=False)
-    fig.tight_layout(rect=(0, 0, 1, 0.92))
-
-    output_path = os.path.join(os.path.dirname(__file__), args.output)
-    fig.savefig(output_path, dpi=200)
-    plt.close(fig)
-
-    print(f"Saved parametric signal gallery to {output_path} (seed={global_seed})")
-
-
-if __name__ == "__main__":  # pragma: no cover - manual execution helper
-    main()

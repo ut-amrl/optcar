@@ -1,4 +1,4 @@
-"""PyTorch dynamic bicycle model, using WheeledLab's wheel-actuated RK4 equations."""
+"""PyTorch dynamic bicycle model, using wheel-actuated RK4 equations."""
 from dataclasses import asdict, dataclass
 from typing import Tuple
 import math
@@ -233,7 +233,7 @@ def _rollout_torch(
 
 @dataclass
 class DBMParams:
-    """WheeledLab's CORL26 AlphaTruck no-randomization defaults."""
+    """CORL26 AlphaTruck no-randomization defaults."""
 
     len_f: float = 0.245
     len_r: float = 0.245

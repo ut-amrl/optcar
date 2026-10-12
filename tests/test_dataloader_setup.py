@@ -1,4 +1,4 @@
-"""WheeledLab-compatible config factories, selections and processed browsing."""
+"""Python config factories, selections and processed browsing."""
 import ast
 from dataclasses import fields
 import importlib.util
@@ -29,7 +29,7 @@ def fixture_setup(tmp_path):
     return roots, values, {'history_steps': 3, 'future_steps': 2, 'dt': .04}
 
 
-def test_python_export_is_importable_and_roundtrips_wheeledlab_fields(tmp_path):
+def test_python_export_is_importable_and_roundtrips_standard_fields(tmp_path):
     roots, values, data = fixture_setup(tmp_path)
     path = tmp_path / 'configs' / 'dconfig.py'
     saved = save_python_setup(str(path), values, data)
@@ -39,7 +39,7 @@ def test_python_export_is_importable_and_roundtrips_wheeledlab_fields(tmp_path):
     spec.loader.exec_module(module)
     assert config_values(module.dataloader_config()) == values
     assert module.viewer_data['history_steps'] == 3
-    assert 'from wheeledlab' not in path.read_text()
+    assert 'from optcar.dataloader_config import DataloaderConfig' in path.read_text()
     tree = ast.parse(path.read_text())
     factory = next(node for node in tree.body if isinstance(node, ast.FunctionDef))
     assert {keyword.arg for keyword in factory.body[0].value.keywords} == {field.name for field in fields(DataloaderConfig)}
@@ -52,7 +52,7 @@ def test_read_actual_style_factory_never_executes_imports_or_code(tmp_path):
     marker = tmp_path / 'executed'
     path = tmp_path / 'dconfig.py'
     path.write_text(f'from pathlib import Path\nPath({str(marker)!r}).touch()\n'
-                    'from wheeledlab_data.dataloaders.FKD.config import DataloaderConfig\n'
+                    'from external_package import DataloaderConfig\n'
                     'import torch\n'
                     'def dataloader_config():\n'
                     '    return DataloaderConfig(dataset_path=["../grass"], num_runs=-1,\n'

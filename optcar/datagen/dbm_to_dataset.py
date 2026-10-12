@@ -1,4 +1,4 @@
-"""WheeledLab batched open-loop collection using copied standalone components."""
+"""Batched open-loop collection with analytical bicycle dynamics."""
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 import hashlib
@@ -15,11 +15,11 @@ from optcar.utils.devices import resolve_device
 from optcar.utils.file_io import write_json
 from optcar.utils.math import yaw_from_quat_torch, quat_from_yaw_torch
 from optcar.utils.state_struct import State_struct_torch
-from optcar.datagen.wheeledlab.bicycle_params import BicycleParams
-from optcar.datagen.wheeledlab.action_bias import ActionBiasSampler
-from optcar.datagen.wheeledlab.param_randomizer import ParamRandomizer
-from optcar.datagen.wheeledlab.parametric_open_loop import ParametricOpenLoopController
-from optcar.datagen.wheeledlab.session import DataCollectionContext, DataCollector
+from optcar.datagen.collection.params import BicycleParams
+from optcar.datagen.collection.randomization import ActionBiasSampler
+from optcar.datagen.collection.randomization import ParamRandomizer
+from optcar.datagen.collection.controller import ParametricOpenLoopController
+from optcar.datagen.collection.session import DataCollectionContext, DataCollector
 
 
 ACTION_SHAPING_KEYS = ("throttle_multiplier", "throttle_bias", "steer_pos_multiplier", "steer_pos_bias", "steer_neg_multiplier", "steer_neg_bias")
@@ -54,7 +54,7 @@ def validate_parameter_ranges(ranges):
         if kind == "uniform" and spec[0] > spec[1]:
             raise ValueError(f"{key}: maximum must be at least the minimum")
         if key in ACTION_BIAS_KEYS and kind != "uniform":
-            raise ValueError(f"{key}: WheeledLab samples per-environment command biases uniformly")
+            raise ValueError(f"{key}: Collection samples per-environment command biases uniformly")
         if kind == "normal" and spec[1] < 0:
             raise ValueError(f"{key}: standard deviation must be nonnegative")
         normalized[key] = [float(spec[0]), float(spec[1]), kind]
@@ -180,7 +180,7 @@ class DynamicBicycleEnv:
         new_state, final_wheel = self.model.rollout(self.state, actions_bicycle, self.dt,
             self.wheel_speed, body_velocity=self.vel_body)
 
-        # WheeledLab analytical rollouts use z=0 even when the reset pose has height.
+        # analytical rollouts use z=0 even when the reset pose has height.
         new_state[..., 2] = 0.0
         # Extract new state (squeeze time dimension)
         self.state[..., :13] = new_state[:, 0, :]
@@ -373,7 +373,6 @@ class DynamicBicycleEnv:
         return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
 
-
 @dataclass
 class CommandConfig:
     duration: float = 10.0
@@ -416,7 +415,7 @@ class CommandConfig:
         if not isinstance(self.bezier_full_range, bool):
             raise ValueError("bezier_full_range must be true or false")
         if tuple(self.initial_velocity) != (0.0, 0.0):
-            raise ValueError("WheeledLab resets body and wheel velocities to zero; initial_velocity must be [0, 0]")
+            raise ValueError("Simulation resets body and wheel velocities to zero; initial_velocity must be [0, 0]")
         if not math.isfinite(self.env_spacing) or self.env_spacing < 0 or not math.isfinite(self.max_velocity) or self.max_velocity <= 0:
             raise ValueError("Invalid environment spacing or velocity limit")
         if self.max_lateral_acceleration_mps2 is not None and (not math.isfinite(self.max_lateral_acceleration_mps2) or self.max_lateral_acceleration_mps2 <= 0):
@@ -439,7 +438,7 @@ def randomized_params(base, commands, run_index):
             ranges.setdefault(key, [value * (1-commands.parameter_randomization), value * (1+commands.parameter_randomization)])
     ranges = validate_parameter_ranges(ranges)
     ranged = replace(base, **{key: value for key, value in ranges.items() if key not in ACTION_BIAS_KEYS})
-    # WheeledLab samples one scalar parameter set per run, shared by all envs.
+    # Collection samples one scalar parameter set per run, shared by all envs.
     seed = commands.seed + (run_index if commands.resample_params_each_run and not commands.fix_run_seed else 0)
     resolved = ParamRandomizer(seed=seed).randomize_params(ranged)
     model_params(resolved)  # Validate sampled model parameters before allocation.
@@ -467,31 +466,30 @@ def make_controller(commands, dt, num_steps, run_index, device):
         bezier_full_range=commands.bezier_full_range)
 
 
-def generate(root, terrain, params=None, data=None, commands=None, episodes=None,
+def generate(root, terrain, params=None, data=None, commands=None, runs=10,
              batch_size=32, device="cpu", fractions=(0.8, 0.1, 0.1), progress=None, cancelled=None,
-             calibration=None, process_windows=False, runs=None):
-    """Each WheeledLab run produces one [batch_size, duration/dt, 15] raw bin.
-
-    episodes is a legacy argument alias for runs; GUI/CLI now call the setting Runs.
-    Only raw collection happens here; Dataset builder processes the saved bins.
-    """
+             calibration=None):
+    """Save one [batch_size, duration/dt, 15] raw bin per collection run."""
     device = resolve_device(device)
-    runs = runs if runs is not None else episodes if episodes is not None else 10
     data, commands = data or DataConfig(), commands or CommandConfig()
     if not isinstance(runs, int) or not isinstance(batch_size, int) or runs < 1 or batch_size < 1:
         raise ValueError("Runs and batch_size must be positive integers")
-    if process_windows:
-        raise ValueError("Synthetic collection saves raw bins. Use Dataset builder for training windows.")
     steps = round(commands.duration / data.dt)
     if steps < 1 or abs(steps*data.dt - commands.duration) > 1e-6:
         raise ValueError("Duration must be an integer multiple of dt")
     session_split("validate", commands.seed, fractions)
     base = simulation_params(params, commands, data.dt)
     randomized_params(base, commands, 0)  # Validate range specs before creating output.
-    provenance = {"pipeline": "wheeledlab_batched_v1", "params": asdict(model_params(base)),
+    provenance = {"pipeline": "batched_v1", "params": asdict(model_params(base)),
         "commands": asdict(commands), "batch_size": batch_size, "fractions": list(fractions), "calibration": calibration or {}}
-    identity = hashlib.sha256(json.dumps(provenance, sort_keys=True).encode()).hexdigest()[:12]
     root = Path(root)
+    manifest_path = root / "manifest.json"
+    if manifest_path.is_file():
+        recorded = json.loads(manifest_path.read_text())["provenance"]
+        settings = lambda value: {key: item for key, item in value.items() if key != "pipeline"}
+        if settings(recorded) == settings(provenance):
+            provenance = recorded  # Keep a collection's saved identity when continuing it.
+    identity = hashlib.sha256(json.dumps(provenance, sort_keys=True).encode()).hexdigest()[:12]
     completed = 0
     started = time.monotonic()
     # Reuse the existing output lock, configuration guard, and manifest commits.

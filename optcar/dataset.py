@@ -14,9 +14,9 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset, Sampler
 
-from optcar.utils.filter import quaternion_continuity_filter_batch
+from optcar.utils.math import quaternion_continuity_filter_batch
 from optcar.utils.file_io import atomic_text, safe_name, write_json
-from optcar.utils.frame_transforms import compute_delta_frame_representation, horizon_world_to_body_frame
+from optcar.utils.math import compute_delta_frame_representation, horizon_world_to_body_frame
 from optcar.utils.math import qmultiply_torch, qrotate_torch
 
 
@@ -52,8 +52,7 @@ RAW_SCHEMA = {"version": 1, "dtype": "float32", "features": 15,
 
 def pack_windows(states, actions, history_steps, vehicle_id=0):
     """states/actions: [B,T,13/2]; body features anchored to current state."""
-    # Same per-window continuity and frame conversion as WheeledLab's
-    # DatasetProcessor._process_chunks_to_frames_torch (base.py).
+    # Align quaternion signs before transforming each window.
     states = torch.as_tensor(states, dtype=torch.float32).clone()
     actions = torch.as_tensor(actions, dtype=torch.float32, device=states.device)
     states[:, :, 3:7] = quaternion_continuity_filter_batch(
@@ -68,7 +67,7 @@ def pack_windows(states, actions, history_steps, vehicle_id=0):
 
 
 def chunk_view(data, horizon, stride):
-    """WheeledLab DatasetProcessor.generate_chunks_torch, before flattening.
+    """Create batched sliding windows before flattening.
 
     Keep the unfolded [environment, window, time, feature] view until a bounded
     processing batch is selected, so long recordings don't exhaust GPU memory.
@@ -182,7 +181,7 @@ class DatasetWriter:
         return f"{folder}/processed_{index:010d}.bin"
 
     def _save_window_batch(self, split, values, progress=None):
-        """WheeledLab save_processed_batch plus OptCar's split/manifest metadata."""
+        """Save a processed batch and its split/manifest metadata."""
         index = self.batch_indices[split]
         filename = self.processed_filename(split, index, self.flat_processed)
         path = self.root / filename
@@ -224,7 +223,7 @@ class DatasetWriter:
 
     def write_window_batches(self, episode, batches, split, session, raw_path, raw_shape, metadata=None,
                              progress=None):
-        """Carry input windows forward with WheeledLab's _ingest_processed logic.
+        """Carry input windows forward until a complete output batch is available.
 
         One carryover per split keeps recordings in their existing split. The
         original raw bin stays in place. Shared output shards are listed once;
@@ -270,8 +269,7 @@ class DatasetWriter:
                 if not len(processed):
                     continue
                 self.window_allocations[split].append((episode, len(processed)))
-                # Copied from WheeledLab RawDatasetProcessor._ingest_processed:
-                # fill the previous remainder, save full batches, retain the tail.
+                # Fill the previous remainder, save full batches, retain the tail.
                 current = self.window_carryover[split]
                 if current is not None:
                     needed = size - len(current)
@@ -334,7 +332,7 @@ class DatasetWriter:
         if np.any(norms < 1e-6):
             raise ValueError("Zero quaternion in episode")
         states = states.copy()
-        # Preserve recorded quaternion values, as WheeledLab processing does.
+        # Preserve recorded quaternion values, without renormalizing.
         if len(actions) == len(states) - 1:
             actions = np.concatenate((actions, np.zeros((1, 2), np.float32)))
         raw_file = f"raw/{episode}.bin"
@@ -385,8 +383,8 @@ class DatasetWriter:
 
     def _metadata(self):
         cfg = self.config
-        if self.manifest["provenance"].get("pipeline") == "wheeledlab_batched_v1":
-            return  # The copied DataCollector writes the full WheeledLab metadata.
+        if not self.process_windows and "num_envs" in self.manifest:
+            return  # DataCollector owns metadata for batched raw collections.
         if not self.flat_processed:
             write_json(self.root / "metadata/schema.json", RAW_SCHEMA)
             atomic_text(self.root / "metadata/dataset_config.py",
@@ -410,7 +408,7 @@ class DatasetWriter:
 
 
 class FKDDataset(Dataset):
-    def __init__(self, roots, config, split="train", sources=None, allow_wheeledlab=False, dl_config=None, is_test_set=False):
+    def __init__(self, roots, config, split="train", sources=None, allow_headerless=False, dl_config=None, is_test_set=False):
         if isinstance(roots, (str, Path)):
             roots = [roots]
         if split not in ("train", "val", "test", "all"):
@@ -449,7 +447,7 @@ class FKDDataset(Dataset):
                     continue
                 if sources and doc["source"] not in sources:
                     continue
-                if allow_wheeledlab and not doc.get("process_windows", True):
+                if allow_headerless and not doc.get("process_windows", True):
                     continue
                 if doc["schema"].get("features") != 42 or doc["schema"].get("dtype") != "float32":
                     raise ValueError(f"Unsupported feature layout in {path}")
@@ -482,19 +480,18 @@ class FKDDataset(Dataset):
                     if (split == "all" or shard["split"] == split) and file.is_relative_to(root):
                         self._append(file, tuple(shard["shape"]), doc["source"], doc["terrain"], dataset_idx, shard["split"])
             if not manifests:
-                if allow_wheeledlab:
-                    # WheeledLab FKDDataset._load_file_names uses entered path
-                    # order, sorted data/*.bin, then direct *.bin as fallback.
+                if allow_headerless:
+                    # Keep entered path order, sorted data/*.bin, then direct *.bin.
                     folder = root / "data" if (root / "data").is_dir() else root
                     bins = sorted(folder.glob("*.bin"))
                     if bins:
                         if split != "all":
-                            raise ValueError("WheeledLab bins have no recorded split; choose all to view them")
+                            raise ValueError("These bins have no recorded split; choose all to view them")
                         for file in bins:
                             count, remainder = divmod(file.stat().st_size, config.window_steps * 42 * 4)
                             if remainder:
                                 raise ValueError(f"Invalid binary size: {file}")
-                            self._append(file, (count, config.window_steps, 42), "wheeledlab", "unknown", dataset_idx, None)
+                            self._append(file, (count, config.window_steps, 42), "unknown", "unknown", dataset_idx, None)
                         continue
                 # External generalist data must already be split by episode/session.
                 # Its layout is declared with a schema.json, never inferred silently.
@@ -525,7 +522,7 @@ class FKDDataset(Dataset):
             self._select_dataloader_trajectories(dl_config, is_test_set)
 
     def _select_dataloader_trajectories(self, dl_config, is_test_set):
-        """WheeledLab FKD file selection followed by per-dataset trajectory caps.
+        """FKD file selection followed by per-dataset trajectory caps.
 
         Keep its sorted files, seed + dataset index, torch.randperm and sorted
         selected offsets. Only the index map changes; bins remain memory mapped.
@@ -576,7 +573,6 @@ class FKDDataset(Dataset):
                 selected_splits.append(self.shard_splits[i])
         self.shards, self.dataset_file_mapping, self.shard_splits = selected_shards, selected_mapping, selected_splits
         self.ends = np.cumsum([shard[1][0] for shard in self.shards]).tolist()
-        # Adapted from WheeledLab FKDDataset._apply_trajectory_limits.
         totals = [sum(shard[1][0] for shard, owner in zip(self.shards, self.dataset_file_mapping)
                       if owner == dataset_idx) for dataset_idx in range(len(limits))]
         desired_counts = [total if desired is None or desired < 0 else min(desired, total)
@@ -631,7 +627,7 @@ class FKDDataset(Dataset):
         return len(self._global_indices) if self._global_indices is not None else self.ends[-1]
 
     def locate_window(self, index):
-        """Locate a global trajectory index using WheeledLab's file ordering."""
+        """Locate a global trajectory index using file ordering."""
         index = operator.index(index)
         if not 0 <= index < len(self):
             raise IndexError(index)
@@ -657,10 +653,10 @@ class FKDDataset(Dataset):
         return torch.from_numpy(np.array(self.cache[shard][location["window_index"]], copy=True))
 
     def get_fkd_sample(self, index):
-        """WheeledLab FKDDataset.__getitem__ for its standard 42-column format.
+        """FKD training sample slicing for its standard 42-column format.
 
         The current state is shared by history and future. Its future delta
-        starts at identity, as in WheeledLab, without changing stored data.
+        starts at identity, without changing stored data.
         """
         data = self.load_window(index)
         current = self.config.history_steps - 1

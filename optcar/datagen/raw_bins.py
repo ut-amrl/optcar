@@ -1,13 +1,4 @@
-"""Adapted from WheeledLab dbm_estimator/extractor.py and plot_sim_bins.py.
-
-Load WheeledLab raw dataset .bin files produced by rosbag_to_raw.py.
-
-Each .bin is a flat float32 array of shape [T, D] where:
-    D = 15  -> pose(7) + velocity(6) + action_v(1) + action_steer(1)
-    D = 17  -> ... + cmd_vel_throttle(1) + cmd_vel_steering(1)
-
-The accompanying `<root>/metadata/dataset_config.py` defines `control_dt`.
-"""
+"""Read raw float32 bins and their timestep, layout and auxiliary metadata."""
 
 from __future__ import annotations
 
@@ -62,7 +53,7 @@ def read_metadata(path: Path) -> dict:
     metadata = root / "metadata"
     conversion = _json(metadata / "conversion.json")
     schema = _json(metadata / "schema.json")
-    legacy = _json(metadata / "metadata.json")
+    metadata_info = _json(metadata / "metadata.json")
     relative = str(path.resolve().relative_to(root))
     record = conversion.get("bins", {}).get(relative, {})
     config = record.get("config", conversion.get("config", {}))
@@ -72,7 +63,7 @@ def read_metadata(path: Path) -> dict:
     def literal(name):
         match = re.search(rf"\b{name}\s*(?::[^=\n]+)?=\s*([0-9.eE+-]+)", text)
         return float(match.group(1)) if match else None
-    dt = config.get("dt", literal("control_dt") or legacy.get("control_dt", 0.02))
+    dt = config.get("dt", literal("control_dt") or metadata_info.get("control_dt", 0.02))
     cols = schema.get("features", literal("feature_dim"))
     yaml_path = metadata / "rosbag_conversion.yaml"
     if yaml_path.exists():
@@ -81,7 +72,7 @@ def read_metadata(path: Path) -> dict:
         dt = yaml_config.get("dt", dt)
         if cols is None and "include_cmd_vel" in yaml_config:
             cols = 17 if yaml_config["include_cmd_vel"] else 15
-    return {"dt": dt, "columns": cols, "num_envs": literal("num_envs") or legacy.get("num_envs", 1),
+    return {"dt": dt, "columns": cols, "num_envs": literal("num_envs") or metadata_info.get("num_envs", 1),
             "source": record.get("source"), "root": str(root), "aux": record.get("aux"),
             "is_auxiliary": (root / "metadata/aux_schema.json").exists() and Path(relative).parts[:1] == ("aux",)}
 
@@ -130,7 +121,7 @@ def _bin_layout_score(arr: np.ndarray) -> float:
 
 
 def load_bin(bin_path: Path, columns=None, num_envs=None, env_index=0) -> Tuple[np.ndarray, int]:
-    """Read float32, preserving WheeledLab's [environment, step, feature] order."""
+    """Read float32, preserving [environment, step, feature] order."""
     bin_path = Path(bin_path).expanduser().resolve()
     if not bin_path.is_file() or bin_path.suffix != ".bin":
         raise ValueError("Choose an existing raw .bin file")
@@ -154,7 +145,7 @@ def load_bin(bin_path: Path, columns=None, num_envs=None, env_index=0) -> Tuple[
             raise ValueError("Bin size does not match its raw layout (15 or 17 columns and environment count)")
         width = int(expected)
     elif possible:
-        # Keep WheeledLab's quaternion/trajectory plausibility scoring for headerless bins.
+        # Keep quaternion/trajectory plausibility scoring for headerless bins.
         _, width = min((_bin_layout_score(raw.reshape(-1, D)[:2048]), D) for D in possible)
     else:
         raise ValueError("Cannot infer raw bin columns; expected 15 or 17 float32 features")

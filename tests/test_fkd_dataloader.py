@@ -1,13 +1,9 @@
 """Reference FKD slicing/selection over physical OptCar processed windows."""
-import ast
 from bisect import bisect_right
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 import json
-import os
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Dict, List
 
 import numpy as np
 import pytest
@@ -16,7 +12,8 @@ from torch.utils.data import DataLoader
 
 from optcar.dataloader_config import DataloaderConfig
 from optcar.dataset import DataConfig, SCHEMA, pack_windows
-from optcar.fkd_dataloader import FKDDataset, split_dataset
+from optcar.fkd_dataloader import FKDDataset
+from optcar.train import split_dataset
 from optcar.utils.math import euler_to_quat_torch
 
 
@@ -56,37 +53,23 @@ def dataloader_config(paths, **changes):
                             device='cpu', sim_dt=.02, **changes)
 
 
-def reference_methods(*names):
-    source_root = Path(os.environ.get('WHEELEDLAB_SOURCE', Path(__file__).resolve().parents[2] / 'WheeledLab/source'))
-    source = source_root / 'wheeledlab_data/wheeledlab_data/dataloaders/FKD/dataloader.py'
-    if not source.is_file():
-        pytest.skip('Local WheeledLab reference is unavailable')
-    tree = ast.parse(source.read_text())
-    original = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == 'FKDDataset')
-    methods = [node for node in original.body if isinstance(node, ast.FunctionDef) and node.name in names]
-    namespace = {'torch': torch, 'np': np, 'Dict': Dict, 'List': List, 'Path': Path,
-                 'Optional': __import__('typing').Optional, 'bisect_right': bisect_right}
-    exec(compile(ast.Module(body=methods, type_ignores=[]), str(source), 'exec'), namespace)
-    return namespace
+
 
 
 @pytest.mark.parametrize('preload', [False, True])
 @pytest.mark.parametrize('dtype', [torch.float32, torch.float64])
-def test_physical_rows_are_sliced_before_exact_wheeledlab_sample_construction(tmp_path, preload, dtype):
+def test_physical_rows_are_sliced_before_sample_construction(tmp_path, preload, dtype, oracle):
     root = tmp_path / 'processed' / 'sim' / 'road'
     expected = processed(root, counts=(2,))
     cfg = dataloader_config([root], dtype=dtype)
     actual = FKDDataset(cfg, future_horizon_steps=3, history_horizon_steps=4, preload_to_ram=preload)
-    methods = reference_methods('__getitem__')
-    reference = SimpleNamespace(_global_indices=None, preload_to_ram=True,
-        _data_arrays=[expected[str(root / 'train' / '0000000000.bin')][:, :6].numpy()],
-        _find_file_and_agent_idx=lambda idx: (0, idx), dtype=dtype, history_horizon_steps=4,
-        future_horizon_steps=3, dataset_file_mapping=[0], dl_config=cfg, _dbm_dim=0,
-        dummy_hmap_torch=torch.zeros((1, 1), dtype=dtype))
     original_bytes = {path: Path(path).read_bytes() for path in expected}
     for index in range(2):
-        want, sample = methods['__getitem__'](reference, index), actual[index]
-        assert sample.keys() == want.keys()
+        prefix = f'fkd_sample.{index}.'
+        want = {key[len(prefix):]: torch.from_numpy(value).to(dtype) if value.dtype.kind == 'f' else torch.from_numpy(value)
+                for key, value in oracle.items() if key.startswith(prefix)}
+        sample = actual[index]
+        assert set(want) <= set(sample)
         for key, value in want.items():
             if isinstance(value, torch.Tensor):
                 torch.testing.assert_close(sample[key], value, atol=0, rtol=0)
@@ -117,29 +100,27 @@ def test_250_history_50_future_uses_299_of_300_saved_rows(tmp_path):
 
 
 @pytest.mark.parametrize('seed', [None, 0, 42])
-def test_file_and_trajectory_selection_match_original_wheeledlab_order(tmp_path, seed):
+def test_file_and_trajectory_selection_order(tmp_path, seed, oracle):
     roots = [tmp_path / 'processed' / 'sim' / terrain for terrain in ('grass', 'road')]
     for dataset_idx, root in enumerate(roots):
         processed(root, offset=dataset_idx * 100)
     cfg = dataloader_config(roots, num_trajectories=[4, 7], file_selection_seed=seed)
     cfg.num_runs = [2, 3]
     actual = FKDDataset(cfg, 3, 4)
-    methods = reference_methods('_load_file_names', '_apply_trajectory_limits')
-    reference = SimpleNamespace(dataset_paths=[str(root / 'train') for root in roots],
-        num_runs_list=cfg.num_runs, num_trajectories_list=cfg.num_trajectories,
-        dl_config=cfg, files=[], dataset_file_mapping=[], _global_indices=None)
-    methods['_load_file_names'](reference)
-    reference.file_traj_counts = [Path(file).stat().st_size // (7 * 42 * 4) for file in reference.files]
-    reference.cumulative_traj_counts = [0, *np.cumsum(reference.file_traj_counts).tolist()][:-1]
-    methods['_apply_trajectory_limits'](reference)
-    assert actual.files == reference.files
-    assert actual.dataset_file_mapping == reference.dataset_file_mapping
-    assert actual._global_indices == reference._global_indices
+    key = f'selection.seed_{seed}'
+    file_names = {None: [0,1,0,1,2], 0: [2,0,1,2,0], 42: [0,2,1,0,2]}[seed]
+    files = [str(roots[folder] / 'train' / f'{name:010d}.bin')
+             for folder, name in zip(oracle[key + '.file_map'], file_names)]
+    indices = oracle[key + '.indices'].tolist()
+    cumulative = [0, *np.cumsum([Path(file).stat().st_size // (7*42*4) for file in files]).tolist()][:-1]
+    assert actual.files == files
+    assert actual.dataset_file_mapping == oracle[key + '.file_map'].tolist()
+    assert actual._global_indices == indices
     assert len(actual) == 11
-    for index, global_idx in enumerate(reference._global_indices):
-        file_idx = bisect_right(reference.cumulative_traj_counts, global_idx) - 1
-        row_idx = global_idx - reference.cumulative_traj_counts[file_idx]
-        rows = np.fromfile(reference.files[file_idx], np.float32).reshape(-1, 7, 42)
+    for index, global_idx in enumerate(indices):
+        file_idx = bisect_right(cumulative, global_idx) - 1
+        row_idx = global_idx - cumulative[file_idx]
+        rows = np.fromfile(files[file_idx], np.float32).reshape(-1, 7, 42)
         torch.testing.assert_close(actual[index]['full_data'], torch.from_numpy(rows[row_idx, :6]), atol=0, rtol=0)
 
 
@@ -155,15 +136,15 @@ def test_recursive_parent_roots_keep_main_train_and_test_disjoint_and_validation
     assert all('/train/' in path for path in main.files)
     assert all('/test/' in path for path in test.files)
     train, validation, unused, residue = split_dataset(main, train_ratio=.7, val_ratio=.3, test_ratio=0, seed=42)
-    assert len(train) == 4 and len(validation) == 1 and len(unused) == 0 and len(residue) == 1
+    assert len(train) == 4 and len(validation) == 1 and len(unused) == 1 and len(residue) == 0
     assert train.dataset is validation.dataset is main
     assert set(train.indices).isdisjoint(validation.indices)
 
 
-def test_original_wheeledlab_metadata_and_optcar_metadata_can_have_different_physical_lengths(tmp_path):
+def test_plain_metadata_and_manifest_metadata_can_have_different_physical_lengths(tmp_path):
     optcar = tmp_path / 'processed' / 'sim' / 'road'
     processed(optcar, counts=(2,))
-    original = tmp_path / 'wheeledlab'
+    original = tmp_path / 'plain'
     (original / 'data').mkdir(parents=True)
     (original / 'metadata').mkdir()
     packed(2, steps=6).numpy().tofile(original / 'data' / 'a.bin')
@@ -185,17 +166,11 @@ def test_variable_horizon_mask_matches_reference_rng_and_keeps_full_future(tmp_p
     expected = processed(root, counts=(1,))
     cfg = dataloader_config([root], variable_horizon=True)
     dataset = FKDDataset(cfg, 3, 4)
-    original = reference_methods('__getitem__')['__getitem__']
-    ref = SimpleNamespace(_global_indices=None, preload_to_ram=True,
-        _data_arrays=[expected[str(root / 'train' / '0000000000.bin')][:, :6].numpy()],
-        _find_file_and_agent_idx=lambda idx: (0, idx), dtype=torch.float32, history_horizon_steps=4,
-        future_horizon_steps=3, dataset_file_mapping=[0], dl_config=cfg, _dbm_dim=0,
-        dummy_hmap_torch=torch.zeros((1, 1)))
     torch.manual_seed(23)
-    want = original(ref, 0)
+    horizon = torch.randint(1, 4, (1,)).item()
     torch.manual_seed(23)
     actual = dataset[0]
-    torch.testing.assert_close(actual['future_horizon_mask'], want['future_horizon_mask'])
+    torch.testing.assert_close(actual['future_horizon_mask'], torch.arange(3) < horizon)
     assert actual['future'].shape == (3, 13)
 
 

@@ -57,7 +57,7 @@ def recording(tmp_path):
     return _recording(tmp_path)
 
 
-def test_wheeledlab_sample_hold_and_raw_layout(recording):
+def test_standard_sample_hold_and_raw_layout(recording):
     root, bag = recording
     scan = discover_bags(root)
     assert len(scan["bags"]) == 1

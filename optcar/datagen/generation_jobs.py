@@ -257,7 +257,7 @@ def run_worker(directory):
                                   DataConfig(**config["data"]), CommandConfig(**config["commands"]),
                                   runs=record["runs"], batch_size=record["batch_size"], device=record["device"],
                                   fractions=config["fractions"], progress=update, cancelled=cancelled,
-                                  calibration=config.get("calibration"), process_windows=False)
+                                  calibration=config.get("calibration"))
             complete = result["completed"] == result["total"]
             record.update(status="complete" if complete else "cancelled", result=result)
             if complete:

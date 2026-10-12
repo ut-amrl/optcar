@@ -1,4 +1,4 @@
-"""Dataset collection utilities for WheeledLab runs."""
+"""Dataset collection utilities for runs."""
 
 from __future__ import annotations
 

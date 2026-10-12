@@ -1,11 +1,7 @@
-"""Processed-window indexing and sample parity with WheeledLab's loader."""
-import ast
+"""Processed-window indexing, selection and sample slicing."""
 from dataclasses import asdict
 import json
-import os
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Dict
 
 import numpy as np
 import pytest
@@ -79,9 +75,9 @@ def test_flat_source_terrain_layout_keeps_recorded_validation_split(tmp_path):
     assert validation.locate_window(0)["path"] == str(root / shards[1]["path"])
     for index, value in enumerate(values[2:4]):
         torch.testing.assert_close(validation.load_window(index), value, atol=0, rtol=0)
-    assert len(FKDDataset(root / "valid", config, "all", allow_wheeledlab=True)) == 2
+    assert len(FKDDataset(root / "valid", config, "all", allow_headerless=True)) == 2
     with pytest.raises(ValueError, match="No train windows"):
-        FKDDataset(root / "valid", config, "train", allow_wheeledlab=True)
+        FKDDataset(root / "valid", config, "train", allow_headerless=True)
 
 
 def test_mixed_legacy_and_flat_manifest_roots_preserve_order_and_deduplicate(tmp_path):
@@ -101,7 +97,7 @@ def test_mixed_legacy_and_flat_manifest_roots_preserve_order_and_deduplicate(tmp
     assert dataset.locate_window(7)["path"].startswith(str(new_root / "train"))
 
 
-def test_wheeledlab_directory_order_sorted_files_and_opt_in(tmp_path):
+def test_headerless_directory_order_sorted_files_and_opt_in(tmp_path):
     values = windows()
     second, first = tmp_path / "second", tmp_path / "first" / "data"
     second.mkdir(); first.mkdir(parents=True)
@@ -110,7 +106,7 @@ def test_wheeledlab_directory_order_sorted_files_and_opt_in(tmp_path):
     values[0:1].numpy().tofile(second / "x.bin")
     values[4:5].numpy().tofile(second / "z.bin")
     config = DataConfig(history_steps=4, future_steps=3)
-    dataset = FKDDataset([second, first.parent, first], config, "all", allow_wheeledlab=True)
+    dataset = FKDDataset([second, first.parent, first], config, "all", allow_headerless=True)
     expected = values[[0, 4, 1, 2, 3]]
     assert len(dataset) == 5
     assert [file[0].name for file in dataset.shards] == ["x.bin", "z.bin", "a.bin", "b.bin"]
@@ -118,7 +114,7 @@ def test_wheeledlab_directory_order_sorted_files_and_opt_in(tmp_path):
     for index, value in enumerate(expected):
         torch.testing.assert_close(dataset.load_window(index), value, atol=0, rtol=0)
     with pytest.raises(ValueError, match="no recorded split"):
-        FKDDataset(second, config, allow_wheeledlab=True)
+        FKDDataset(second, config, allow_headerless=True)
     with pytest.raises(ValueError, match="No all windows"):
         FKDDataset(second, config, "all")
 
@@ -153,28 +149,16 @@ def test_training_contract_bounds_and_viewing_cannot_change_bins(tmp_path):
 def test_malformed_plain_bin_does_not_get_truncated(tmp_path):
     np.zeros(43, dtype=np.float32).tofile(tmp_path / "invalid.bin")
     with pytest.raises(ValueError, match="Invalid binary size"):
-        FKDDataset(tmp_path, DataConfig(history_steps=4, future_steps=3), "all", allow_wheeledlab=True)
+        FKDDataset(tmp_path, DataConfig(history_steps=4, future_steps=3), "all", allow_headerless=True)
 
 
-def test_fkd_sample_matches_original_wheeledlab_getitem(tmp_path):
-    source_root = Path(os.environ.get("WHEELEDLAB_SOURCE", Path(__file__).resolve().parents[2] / "WheeledLab/source"))
-    source = source_root / "wheeledlab_data/wheeledlab_data/dataloaders/FKD/dataloader.py"
-    if not source.is_file():
-        pytest.skip("Local WheeledLab source is unavailable")
-    tree = ast.parse(source.read_text())
-    loader = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "FKDDataset")
-    method = next(node for node in loader.body if isinstance(node, ast.FunctionDef) and node.name == "__getitem__")
-    namespace = {"torch": torch, "np": np, "Dict": Dict}
-    exec(compile(ast.Module(body=[method], type_ignores=[]), str(source), "exec"), namespace)
+def test_fkd_sample_matches_frozen_slicing(tmp_path, oracle):
     values = windows()
     config, _ = manifest_dataset(tmp_path / "dataset", values)
     dataset = FKDDataset(tmp_path / "dataset", config, "all")
-    reference = SimpleNamespace(_global_indices=None, preload_to_ram=True, _data_arrays=[values.numpy()],
-        _find_file_and_agent_idx=lambda index: (0, index), dtype=torch.float32, history_horizon_steps=4,
-        dataset_file_mapping=[0], dl_config=SimpleNamespace(is_cmd_vel_in_data=False), _dbm_dim=0,
-        dummy_hmap_torch=torch.zeros((1, 1)))
     for index in range(5):
-        expected = namespace["__getitem__"](reference, index)
+        prefix = f"dataset_sample.{index}."
+        expected = {key[len(prefix):]: torch.from_numpy(value) for key, value in oracle.items() if key.startswith(prefix)}
         actual = dataset.get_fkd_sample(index)
         assert set(expected) <= set(actual)
         for key, value in expected.items():
@@ -196,37 +180,25 @@ def test_recorded_session_leak_checks_remain_active(tmp_path):
     document["episodes"]["val"]["session"] = document["episodes"]["train"]["session"]
     path.write_text(json.dumps(document))
     with pytest.raises(ValueError, match="Session leakage"):
-        FKDDataset(path.parent / "processed", config, "all", allow_wheeledlab=True)
+        FKDDataset(path.parent / "processed", config, "all", allow_headerless=True)
 
 
-def test_manifest_quaternion_order_must_match_wheeledlab_wxyz(tmp_path):
+def test_manifest_quaternion_order_must_match_wxyz(tmp_path):
     config, _ = manifest_dataset(tmp_path / "dataset", windows())
     path = tmp_path / "dataset" / "manifest.json"
     document = json.loads(path.read_text())
     document["schema"]["quaternion_order"] = "xyzw"
     path.write_text(json.dumps(document))
     with pytest.raises(ValueError, match="quaternion order.*expected wxyz"):
-        FKDDataset(path.parent / "processed", config, "all", allow_wheeledlab=True)
+        FKDDataset(path.parent / "processed", config, "all", allow_headerless=True)
     del document["schema"]["quaternion_order"]
     path.write_text(json.dumps(document))
     assert len(FKDDataset(path.parent, config, "all")) == 5
 
 
 @pytest.mark.parametrize('seed', [None, 0, 42])
-def test_file_and_trajectory_limits_match_wheeledlab_methods(tmp_path, seed):
-    """Run WheeledLab's actual selection methods against the same saved files."""
-    source_root = Path(os.environ.get('WHEELEDLAB_SOURCE', Path(__file__).resolve().parents[2] / 'WheeledLab/source'))
-    source = source_root / 'wheeledlab_data/wheeledlab_data/dataloaders/FKD/dataloader.py'
-    if not source.is_file():
-        pytest.skip('Local WheeledLab source is unavailable')
-    tree = ast.parse(source.read_text())
-    original = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == 'FKDDataset')
-    methods = [node for node in original.body if isinstance(node, ast.FunctionDef)
-               and node.name in ('_load_file_names', '_apply_trajectory_limits')]
+def test_file_and_trajectory_limits(tmp_path, seed, oracle):
     from bisect import bisect_right
-    from typing import List
-    namespace = {'torch': torch, 'Path': Path, 'Dict': Dict, 'List': List, 'bisect_right': bisect_right}
-    exec(compile(ast.Module(body=methods, type_ignores=[]), str(source), 'exec'), namespace)
     roots = [tmp_path / 'grass', tmp_path / 'road']
     values = windows(12)
     for dataset_idx, root in enumerate(roots):
@@ -237,22 +209,21 @@ def test_file_and_trajectory_limits_match_wheeledlab_methods(tmp_path, seed):
             rows.numpy().tofile(root / 'data' / f'{file_idx}.bin')
     cfg = DataloaderConfig(dataset_path=[str(root) for root in roots], num_runs=[2, 3],
                            num_trajectories=[4, 7], file_selection_seed=seed)
-    reference = SimpleNamespace(dataset_paths=cfg.dataset_path, num_runs_list=cfg.num_runs,
-                                num_trajectories_list=cfg.num_trajectories, dl_config=cfg,
-                                files=[], dataset_file_mapping=[], _global_indices=None)
-    namespace['_load_file_names'](reference)
-    reference.file_traj_counts = [Path(file).stat().st_size // (7 * 42 * 4) for file in reference.files]
-    reference.cumulative_traj_counts = [0, *np.cumsum(reference.file_traj_counts).tolist()][:-1]
-    namespace['_apply_trajectory_limits'](reference)
+    key = f'selection.seed_{seed}'
+    names = {None: [0,1,0,1,2], 0: [2,0,1,2,0], 42: [0,2,1,0,2]}[seed]
+    files = [str(roots[folder] / 'data' / f'{name}.bin')
+             for folder, name in zip(oracle[key + '.file_map'], names)]
+    indices = oracle[key + '.indices'].tolist()
+    cumulative = [0, *np.cumsum([Path(file).stat().st_size // (7*42*4) for file in files]).tolist()][:-1]
     config = DataConfig(history_steps=4, future_steps=3)
-    actual = FKDDataset(roots, config, 'all', allow_wheeledlab=True, dl_config=cfg)
-    assert [str(shard[0]) for shard in actual.shards] == reference.files
-    assert actual._global_indices == reference._global_indices
+    actual = FKDDataset(roots, config, 'all', allow_headerless=True, dl_config=cfg)
+    assert [str(shard[0]) for shard in actual.shards] == files
+    assert actual._global_indices == indices
     assert len(actual) == 11
-    for index, global_index in enumerate(reference._global_indices):
-        file_idx = bisect_right(reference.cumulative_traj_counts, global_index) - 1
-        window_idx = global_index - reference.cumulative_traj_counts[file_idx]
-        rows = np.fromfile(reference.files[file_idx], dtype=np.float32).reshape(-1, 7, 42)
+    for index, global_index in enumerate(indices):
+        file_idx = bisect_right(cumulative, global_index) - 1
+        window_idx = global_index - cumulative[file_idx]
+        rows = np.fromfile(files[file_idx], dtype=np.float32).reshape(-1, 7, 42)
         torch.testing.assert_close(actual.load_window(index), torch.from_numpy(rows[window_idx]), atol=0, rtol=0)
 
 
@@ -265,20 +236,20 @@ def test_trajectory_caps_all_zero_and_test_config(tmp_path):
     cfg = DataloaderConfig(dataset_path=[str(root) for root in roots], num_runs=-1,
                            num_trajectories=[0, 3], test_dataset_path=[str(roots[1])],
                            test_num_runs=-1, test_num_trajectories=[2])
-    data = FKDDataset(roots, config, 'all', allow_wheeledlab=True, dl_config=cfg)
+    data = FKDDataset(roots, config, 'all', allow_headerless=True, dl_config=cfg)
     assert len(data) == 3
     assert [row['selected'] for row in data.selection_summary] == [0, 3]
     assert all(data.locate_window(i)['dataset_idx'] == 1 for i in range(3))
-    test = FKDDataset([roots[1]], config, 'all', allow_wheeledlab=True, dl_config=cfg, is_test_set=True)
+    test = FKDDataset([roots[1]], config, 'all', allow_headerless=True, dl_config=cfg, is_test_set=True)
     assert len(test) == 2
     cfg.num_trajectories = [0, 0]
     with pytest.raises(ValueError, match='No trajectories selected'):
-        FKDDataset(roots, config, 'all', allow_wheeledlab=True, dl_config=cfg)
+        FKDDataset(roots, config, 'all', allow_headerless=True, dl_config=cfg)
     cfg.num_trajectories = [-1, None]
-    data = FKDDataset(roots, config, 'all', allow_wheeledlab=True, dl_config=cfg)
+    data = FKDDataset(roots, config, 'all', allow_headerless=True, dl_config=cfg)
     assert len(data) == 10 and data._global_indices is None
     cfg.num_runs = [0, -1]
-    data = FKDDataset(roots, config, 'all', allow_wheeledlab=True, dl_config=cfg)
+    data = FKDDataset(roots, config, 'all', allow_headerless=True, dl_config=cfg)
     assert len(data) == 5 and data.selection_summary[0]['files'] == 0
 
 

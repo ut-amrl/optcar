@@ -7,11 +7,11 @@ import pytest
 import torch
 from torch.utils.data import Dataset, RandomSampler, SequentialSampler, random_split
 
-from optcar import fkd_train
+from optcar import train as training
 
 
 def arguments(*values):
-    return fkd_train.add_training_arguments(argparse.ArgumentParser()).parse_args(values)
+    return training.add_training_arguments(argparse.ArgumentParser()).parse_args(values)
 
 
 def dataset_factory(tmp_path):
@@ -26,7 +26,7 @@ def dataset_factory(tmp_path):
 @pytest.fixture
 def mocked_runtime(monkeypatch):
     calls = SimpleNamespace(models=[], datasets=[], trainers=[], normalization=0, loggers=[])
-    monkeypatch.setattr(fkd_train, "_raise_open_file_limit", lambda: None)
+    monkeypatch.setattr(training, "_raise_open_file_limit", lambda: None)
 
     class SelectedDataset(Dataset):
         def __init__(self, dl_config, future_horizon_steps, history_horizon_steps, no_map, is_test_set):
@@ -83,18 +83,18 @@ def mocked_runtime(monkeypatch):
                               FKDDataset=SelectedDataset, ModelCheckpoint=Callback, EarlyStopping=Callback,
                               TensorBoardLogger=Logger, dtype_to_trainer_precision=dtype_to_trainer_precision,
                               models={"TransformerModel_decoderonly_CTX": Model})
-    monkeypatch.setattr(fkd_train, "load_runtime", lambda: runtime)
+    monkeypatch.setattr(training, "load_runtime", lambda: runtime)
     return calls
 
 
 def test_reference_split_and_ordinary_sampler():
     dataset = list(range(37))
-    actual = fkd_train.split_dataset(dataset, .9, 1 - .9, 0, seed=42)
+    actual = training.split_dataset(dataset, .9, 1 - .9, 0, seed=42)
     sizes = [int(.9 * 37), int((1 - .9) * 37)]
     expected = random_split(dataset, [*sizes, 37 - sum(sizes), 0], generator=torch.Generator().manual_seed(42))
     assert [part.indices for part in actual] == [part.indices for part in expected]
-    train = fkd_train.get_dataloader(actual[0], 4, 0, shuffle=True, is_train=True)
-    val = fkd_train.get_dataloader(actual[1], 4, 0)
+    train = training.get_dataloader(actual[0], 4, 0, shuffle=True, is_train=True)
+    val = training.get_dataloader(actual[1], 4, 0)
     assert isinstance(train.sampler, RandomSampler) and not train.sampler.replacement
     assert isinstance(val.sampler, SequentialSampler)
     assert not train.pin_memory and val.pin_memory
@@ -107,13 +107,13 @@ def test_training_raises_open_file_limit_to_reference_budget(monkeypatch):
     changes = []
     monkeypatch.setattr(resource, "getrlimit", lambda _: (1024, 1_048_576))
     monkeypatch.setattr(resource, "setrlimit", lambda which, limits: changes.append((which, limits)))
-    fkd_train._raise_open_file_limit()
+    training._raise_open_file_limit()
     assert changes == [(resource.RLIMIT_NOFILE, (65_536, 1_048_576))]
 
 
 def test_actual_recipe_setup_uses_reference_effects_without_training(tmp_path, mocked_runtime):
     args = arguments("--dataset-config", str(dataset_factory(tmp_path)), "--device", "cpu", "--output", str(tmp_path / "run"))
-    result = fkd_train.run_training(args)
+    result = training.run_training(args)
     trainer = mocked_runtime.trainers[0]
     model, train, val_loaders, checkpoint = trainer.fit_call
     assert trainer.kwargs["max_epochs"] == 500
@@ -125,7 +125,7 @@ def test_actual_recipe_setup_uses_reference_effects_without_training(tmp_path, m
     assert isinstance(train.sampler, RandomSampler) and not train.sampler.replacement
     assert model.dataset_size == result["training_windows"] == 18
     assert result["validation_windows"] == 1
-    expected = fkd_train.split_dataset(list(range(20)), .9, 1 - .9, 0, seed=42)
+    expected = training.split_dataset(list(range(20)), .9, 1 - .9, 0, seed=42)
     assert train.dataset.indices == sorted(expected[0].indices)
     assert val_loaders[0].dataset.indices == sorted(expected[1].indices)
     assert mocked_runtime.datasets[0].config.file_selection_seed == 42
@@ -155,7 +155,7 @@ def test_explicit_wandb_logs_resolved_configs_without_external_initialization(tm
     args = arguments("--dataset-config", str(dataset_factory(tmp_path)), "--device", "cpu",
                      "--output", str(tmp_path / "run"), "--seed", "9", "--run-name", "wandb-test",
                      "--wandb", "--wandb-project-name", "test-project")
-    fkd_train.run_training(args)
+    training.run_training(args)
     logger = wandb_calls[0]
     assert mocked_runtime.trainers[0].kwargs["logger"] == [mocked_runtime.loggers[0], logger]
     assert logger.kwargs["project"] == "test-project"
@@ -177,7 +177,7 @@ def test_check_validates_shapes_and_never_fits_or_writes(tmp_path, mocked_runtim
     torch.save({"state_dict": {"weight": torch.tensor([7.0])}}, checkpoint)
     args = arguments("--dataset-config", str(dataset_factory(tmp_path)), "--checkpoint", str(checkpoint),
                      "--device", "cpu", "--output", str(output), "--check", "--seed", "9")
-    result = fkd_train.run_training(args)
+    result = training.run_training(args)
     assert result["checked"] and result["sample_shapes"]["history"] == [250, 13]
     assert result["sample_shapes"]["future"] == [50, 13]
     assert result["file_selection_seed"] == result["seed"] == 9
@@ -190,11 +190,11 @@ def test_check_validates_shapes_and_never_fits_or_writes(tmp_path, mocked_runtim
 
 def test_gradient_clipping_is_enabled_only_by_learning_factory(tmp_path, mocked_runtime):
     learning = tmp_path / "learning.py"
-    learning.write_text((fkd_train.CONFIG_DIR / "corl26_learning.py").read_text().replace(
+    learning.write_text((training.CONFIG_DIR / "corl26_learning.py").read_text().replace(
         "use_gradient_clip=False", "use_gradient_clip=True"))
     args = arguments("--dataset-config", str(dataset_factory(tmp_path)), "--learning-config", str(learning),
                      "--device", "cpu", "--output", str(tmp_path / "run"))
-    fkd_train.run_training(args)
+    training.run_training(args)
     assert mocked_runtime.trainers[0].kwargs["gradient_clip_val"] == .001
 
 
@@ -203,17 +203,17 @@ def test_fine_tune_loads_weights_but_resume_passes_complete_checkpoint(tmp_path,
     torch.save({"state_dict": {"weight": torch.tensor([7.0])}}, checkpoint)
     first = arguments("--dataset-config", str(dataset_factory(tmp_path)), "--checkpoint", str(checkpoint),
                       "--device", "cpu", "--output", str(tmp_path / "run"), "--seed", "9")
-    fkd_train.run_training(first)
+    training.run_training(first)
     model, _, _, fit_checkpoint = mocked_runtime.trainers[0].fit_call
     assert model.weight.tolist() == [7.0] and fit_checkpoint is None
     resume_checkpoint = tmp_path / "run" / "last.ckpt"
     torch.save({"state_dict": {"weight": torch.tensor([7.0])}}, resume_checkpoint)
     resumed = arguments("--resume", str(resume_checkpoint), "--device", "cpu")
-    fkd_train.run_training(resumed)
+    training.run_training(resumed)
     assert mocked_runtime.trainers[1].fit_call[3] == str(resume_checkpoint)
     assert mocked_runtime.datasets[-2].config.file_selection_seed == 42
     with pytest.raises(ValueError, match="uses the saved config factories"):
-        fkd_train.run_training(arguments("--resume", str(resume_checkpoint), "--dataset-config", str(first.dataset_config)))
+        training.run_training(arguments("--resume", str(resume_checkpoint), "--dataset-config", str(first.dataset_config)))
 
 
 def test_incompatible_checkpoint_and_invalid_sample_fail_check(tmp_path, mocked_runtime):
@@ -222,30 +222,29 @@ def test_incompatible_checkpoint_and_invalid_sample_fail_check(tmp_path, mocked_
     args = arguments("--dataset-config", str(dataset_factory(tmp_path)), "--checkpoint", str(checkpoint),
                      "--device", "cpu", "--output", str(tmp_path / "output"), "--check")
     with pytest.raises(ValueError, match="does not match"):
-        fkd_train.run_training(args)
+        training.run_training(args)
     assert not (tmp_path / "output").exists()
     with pytest.raises(ValueError, match="history has shape"):
-        fkd_train._validate_sample({"history": torch.zeros(249, 13)}, SimpleNamespace(history_horizon_steps=250, future_horizon_steps=50))
+        training._validate_sample({"history": torch.zeros(249, 13)}, SimpleNamespace(history_horizon_steps=250, future_horizon_steps=50))
 
 
-def test_factory_original_imports_and_missing_config_never_fall_back(tmp_path):
+def test_native_factory_and_missing_config_errors(tmp_path):
     path = tmp_path / "original.py"
-    path.write_text("from wheeledlab_data.dataloaders.FKD.config import DataloaderConfig\n"
+    path.write_text("from optcar.dataloader_config import DataloaderConfig\n"
                     "def dataloader_config():\n    return DataloaderConfig(dataset_path=['one'], num_runs=-1)\n")
-    config = fkd_train.load_config(tmp_path, path, ["dataloader_config"])
+    config = training.load_config(tmp_path, path, ["dataloader_config"])
     assert type(config).__module__ == "optcar.dataloader_config"
     with pytest.raises(FileNotFoundError, match="not found"):
-        fkd_train.load_config(tmp_path, "missing.py", ["dataloader_config"], object)
+        training.load_config(tmp_path, "missing.py", ["dataloader_config"])
 
 
-def test_cli_rejects_legacy_recipe_and_train_facade_matches(capsys):
+def test_cli_rejects_removed_recipe_and_preserves_training_defaults(capsys):
     from optcar.cli import main
-    from optcar import train
+    from optcar import train as training
     with pytest.raises(SystemExit) as exc:
         main(["train", "--config", "configs/train_generalist.yaml"])
     assert exc.value.code == 2
-    assert "--dataset-config" in capsys.readouterr().err
-    assert train.train is train.run_training is fkd_train.run_training
+    assert "unrecognized arguments: --config" in capsys.readouterr().err
     assert arguments().train_split == .9
     assert arguments().train_num_workers == arguments().val_num_workers == 4
     assert not arguments().wandb

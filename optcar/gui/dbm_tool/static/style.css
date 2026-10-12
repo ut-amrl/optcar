@@ -106,29 +106,6 @@ button.secondary:hover, .top-tab:hover { background: #303842; }
 .param-grid label { font-size: 13px; text-align: right; }
 .param-grid input { width: 100%; }
 
-/* Retained controls from the WheeledLab tool. */
-.aggregate-config-bar { display: grid; grid-template-columns: auto minmax(260px, 1fr) auto auto minmax(180px, auto); gap: 8px; align-items: center; margin-bottom: 14px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); }
-.aggregate-config-bar input { min-width: 0; width: 100%; }
-.aggregate-layout { display: grid; grid-template-columns: minmax(520px, .9fr) 320px minmax(0, 2fr); gap: 14px; align-items: start; }
-.aggregate-rows { display: flex; flex-direction: column; gap: 6px; max-height: 50vh; overflow-y: auto; }
-.aggregate-grid { display: grid; grid-template-columns: minmax(0, 1.8fr) minmax(110px, .8fr) 54px 48px 36px 30px; gap: 6px; align-items: center; }
-.aggregate-grid-head { color: var(--muted); font-size: 13px; font-weight: 600; }
-.aggregate-grid input { min-width: 0; }
-.aggregate-grid input[type="color"] { width: 100%; padding: 2px; }
-.aggregate-grid input[type="checkbox"] { justify-self: center; }
-.aggregate-remove { padding: 6px 0; background: var(--raised); color: var(--text); }
-.aggregate-remove:hover { background: #303842; }
-.aggregate-limits, .aggregate-display-options { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--line); }
-.aggregate-limits .params-title, .aggregate-display-options .params-title, .aggregate-display-master { grid-column: 1 / -1; }
-.aggregate-limits label { display: flex; flex-direction: column; gap: 4px; }
-.aggregate-display-options label { display: flex; align-items: center; gap: 6px; }
-.aggregate-display-options input[type="checkbox"] { width: auto; }
-.aggregate-error-panel { margin-top: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); }
-.aggregate-error-table table { width: 100%; border-collapse: collapse; font-size: 13px; background: var(--panel); }
-.aggregate-error-table th, .aggregate-error-table td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: right; }
-.aggregate-error-table th:first-child, .aggregate-error-table td:first-child { text-align: left; }
-.aggregate-error-table th { color: var(--text); font-weight: 600; background: var(--raised); }
-.aggregate-error-empty { color: var(--muted); font-size: 13px; }
 .loader { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; z-index: 100; background: rgba(0, 0, 0, .6); color: var(--text); }
 .spinner { width: 36px; height: 36px; margin-bottom: 12px; border: 3px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -139,7 +116,6 @@ button.secondary:hover, .top-tab:hover { background: #303842; }
   .param-grid { grid-template-columns: auto minmax(0, 1fr) auto minmax(0, 1fr); }
   .dbm-config-location { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .traj-layout { grid-template-columns: 220px minmax(0, 1fr); }
-  .aggregate-layout, .aggregate-config-bar { grid-template-columns: 1fr; }
 }
 @container (max-width: 700px) {
   .plots, .traj-layout { grid-template-columns: minmax(0, 1fr); }

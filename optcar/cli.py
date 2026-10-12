@@ -35,7 +35,7 @@ def main(argv=None):
     scan = commands.add_parser("scan-bags", help="Discover ROS2 bags and show metadata")
     scan.add_argument("root")
     scan.add_argument("--json", action="store_true", help="Print full machine-readable metadata")
-    raw = commands.add_parser("bags-to-bins", help="Convert selected ROS2 bags to raw WheeledLab bins")
+    raw = commands.add_parser("bags-to-bins", help="Convert selected ROS2 bags to raw bins")
     raw.add_argument("root", help="Folder containing bag directories (searched recursively)")
     raw.add_argument("--output", help="Defaults to ROOT's parent / bins")
     raw.add_argument("--select", nargs="+", help="Bag paths relative to ROOT; default: all discovered bags")
@@ -59,15 +59,14 @@ def main(argv=None):
     generate.add_argument("--terrain", required=True)
     generate.add_argument("--dataset-root", default="datasets")
     generate.add_argument("--run", default="default")
-    generate.add_argument("--runs", "--episodes", dest="runs", type=int, help="Number of batched runs / bin files (--episodes is a legacy alias)")
+    generate.add_argument("--runs", dest="runs", type=int, help="Number of batched runs / bin files")
     generate.add_argument("--batch-size", type=int)
     generate.add_argument("--device", help="cpu or a visible GPU index, e.g. cuda:0 or cuda:1")
-    generate.add_argument("--raw-only", action="store_true", help="Save raw episodes only, for the Dataset builder")
 
     build = commands.add_parser("build-dataset", help="Build FKD windows from selected real and synthetic raw bins")
     build.add_argument("--config", required=True, help="YAML with sources, data, output, seed and fractions")
     build.add_argument("--device", help="cpu or cuda:N; defaults to the first visible GPU")
-    build.add_argument("--workers", type=int, help="Parallel file loading threads (WheeledLab default: 16)")
+    build.add_argument("--workers", type=int, help="Parallel file loading threads (default: 16)")
     build.add_argument("--dataset-root", default="datasets", help="Folder holding the shared tmux job registry")
 
     convert = commands.add_parser("convert", help="Convert a complete bag to FKD bins")
@@ -95,8 +94,8 @@ def main(argv=None):
     fit.add_argument("--keys", nargs="+")
     fit.add_argument("--max-evaluations", type=int, default=150)
 
-    from optcar.fkd_train import add_training_arguments
-    add_training_arguments(commands.add_parser("train", help="Train or fine-tune a WheeledLab FKD model"))
+    from optcar.train import add_training_arguments
+    add_training_arguments(commands.add_parser("train", help="Train or fine-tune a FKD model"))
 
     evaluate = commands.add_parser("evaluate", help="Evaluate a checkpoint on held-out bins")
     evaluate.add_argument("--checkpoint", required=True)
@@ -148,7 +147,7 @@ def _dispatch(args):
             write_yaml(target_preset, preset)
         result = GenerationJobs(args.dataset_root).start(args.terrain, args.run,
             data=DataConfig(**cfg.get("data", {})), commands=CommandConfig(**cfg.get("commands", {})),
-            runs=args.runs if args.runs is not None else cfg.get("runs", cfg.get("episodes", 10)),
+            runs=args.runs if args.runs is not None else cfg.get("runs", 10),
             batch_size=args.batch_size if args.batch_size is not None else cfg.get("batch_size", 32),
             device=args.device or cfg.get("device", "cpu"), preset=preset, fractions=cfg.get("fractions", [.8, .1, .1]))
         _print(result)
@@ -187,7 +186,7 @@ def _dispatch(args):
         write_yaml(output, {"params": result["params"], "calibration": calibration})
         _print(result)
     elif args.command == "train":
-        from optcar.fkd_train import run_training
+        from optcar.train import run_training
         _print(run_training(args))
     elif args.command == "evaluate":
         from optcar.evaluate import evaluate

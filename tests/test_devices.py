@@ -71,7 +71,7 @@ def test_gui_passes_selected_gpu_and_rejects_missing_gpu(tmp_path, monkeypatch, 
     monkeypatch.setattr(generation_jobs.shutil,'which',lambda _: '/test/tmux')
     monkeypatch.setattr(generation_jobs.subprocess,'run',fake_tmux)
     client = server.create_app(tmp_path).test_client()
-    response = client.post("/api/generate", json={"terrain": "road", "device": "cuda:1", "raw_only": True})
+    response = client.post("/api/generate", json={"terrain": "road", "device": "cuda:1"})
     assert response.status_code == 200 and len(called)==1
     record=json.loads((tmp_path/'.generation_jobs'/response.json['job_id']/'status.json').read_text())
     assert record['device']=='cuda:1'

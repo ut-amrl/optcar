@@ -135,7 +135,7 @@ def test_api_reports_malformed_config_as_a_client_error(tmp_path, name, text):
     assert str(config_path) in response.get_json()['error']
 
 
-def test_api_reads_exact_saved_columns_and_wheeledlab_slices(tmp_path, monkeypatch):
+def test_api_reads_exact_saved_columns_and_standard_slices(tmp_path, monkeypatch):
     cfg = DataConfig(history_steps=3, future_steps=2, dt=.04, stride=2, shard_windows=2)
     root = tmp_path / 'assembled'
     expected = assembled_fixture(root, cfg)
@@ -239,7 +239,7 @@ def test_viewer_combines_legacy_and_flat_paths_without_duplicate_windows(tmp_pat
     np.testing.assert_array_equal(final['world'], new_expected['test'][0, :, :13])
 
 
-def test_plain_wheeledlab_files_use_entered_roots_and_sorted_file_order(tmp_path):
+def test_plain_standard_files_use_entered_roots_and_sorted_file_order(tmp_path):
     roots = [tmp_path / 'first', tmp_path / 'second']
     for root in roots:
         (root / 'data').mkdir(parents=True)
@@ -434,7 +434,7 @@ def test_load_viewer_config_infers_generated_roots_and_keeps_legacy_dimension_on
     assert load_viewer_config(index)['roots'] == [str(index.parent)]
     assert load_viewer_config(flat / 'manifest.json')['roots'] == [str(flat)]
     assert load_viewer_config(config_fixture(tmp_path / 'dimensions.yaml'))['roots'] == []
-    plain = tmp_path / 'wheeledlab' / 'processed'
+    plain = tmp_path / 'standard' / 'processed'
     (plain / 'metadata').mkdir(parents=True)
     (plain / 'data').mkdir()
     py = plain / 'metadata' / 'dataset_config.py'

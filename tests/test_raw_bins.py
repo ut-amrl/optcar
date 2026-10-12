@@ -1,4 +1,4 @@
-"""Exercise the binary reader and viewer against actual WheeledLab raw layout."""
+"""Exercise the binary reader and viewer against actual raw layout."""
 import json
 from pathlib import Path
 

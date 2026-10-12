@@ -180,7 +180,7 @@ def test_source_terrain_split_layout_keeps_processed_metadata_and_raw_inputs(tmp
     assert build_dataset(output, sources, cfg, device='cpu')['new_windows'] == 0
 
 
-def test_raw_only_metadata_saved_split_and_wheeledlab_nan_policy(tmp_path):
+def test_raw_only_metadata_saved_split_and_standard_nan_policy(tmp_path):
     cfg=DataConfig(history_steps=3,future_steps=2,dt=.04)
     _,rows=raw_fixture(tmp_path/'fixtures',dt=.04)
     raw=tmp_path/'synthetic'
@@ -215,10 +215,9 @@ def test_builder_inspection_api_and_generation_mode(tmp_path,monkeypatch):
         return {'job_id':'a'*32,'tmux_session':'optcar-test'}
     monkeypatch.setattr(server.GenerationJobs,'start',fake_start)
     write_yaml(terrain_path(tmp_path/'datasets','road')/'dbm_params.yaml',{'params':asdict(DBMParams())})
-    response=client.post('/api/generate',json={'terrain':'road','raw_only':True})
+    response=client.post('/api/generate',json={'terrain':'road'})
     assert response.status_code==200 and response.json['tmux_session']=='optcar-test'
     assert called==[('road','default')]
-    assert client.post('/api/generate',json={'terrain':'road','raw_only':False}).status_code==400
     assert len(called)==1
 
 

@@ -186,7 +186,7 @@ def build_output(output, sources):
 
 
 def load_files_parallel(entries, max_workers=16, cancelled=None):
-    """Adapt WheeledLab RawDatasetProcessor.load_files_parallel's thread loading.
+    """Load bins concurrently while preserving source order.
 
     Use the shared raw reader, materializing bytes in the loading threads.
     Keep at most max_workers files prefetched and retain source order/IDs rather
@@ -286,7 +286,7 @@ def build_dataset(output, sources, data=None, seed=42, fractions=(.8, .1, .1), p
                         completed += 1
                         report(f"Already saved {entry['name']}")
                         continue
-                    # Same whole-environment invalid-sample policy as WheeledLab.
+                    # Reject an entire trajectory when any sample is invalid.
                     valid = np.isfinite(rows).all(axis=(1, 2))
                     per_env = entry["estimated_windows"] // entry["num_envs"]
                     pending = []
@@ -302,9 +302,8 @@ def build_dataset(output, sources, data=None, seed=42, fractions=(.8, .1, .1), p
                         raise ValueError(f"Zero quaternion in {entry['name']}")
 
                     def processed_batches():
-                        # Same whole-file GPU flow as WheeledLab's
-                        # RawDatasetProcessor._process_single_file: move all
-                        # valid environments, unfold, convert frames, copy to CPU.
+                        # Move all valid trajectories to the device, unfold windows,
+                        # convert frames, and copy the processed batch to CPU.
                         if cancelled and cancelled():
                             raise _BuildCancelled()
                         if not pending:
@@ -317,7 +316,7 @@ def build_dataset(output, sources, data=None, seed=42, fractions=(.8, .1, .1), p
                             packed = pack_windows(chunks[..., :13], chunks[..., 13:15], data.history_steps,
                                                   entry["vehicle_id"]).cpu()
                         del batch, chunks
-                        # WheeledLab also drops chunks with post-transform NaNs.
+                        # Drop windows with post-transform NaNs.
                         post_nan = torch.isnan(packed).any(dim=1).any(dim=1)
                         if post_nan.any():
                             packed = packed[~post_nan]

@@ -1,4 +1,4 @@
-"""State structure utilities for WheeledLab environments."""
+"""State structures for batched simulation."""
 
 import numpy as np
 import torch

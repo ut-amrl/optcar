@@ -1,1 +1,1 @@
-"""Manual DBM workbench copied and adapted from WheeledLab."""
+"""Manual DBM workbench for raw-bin inspection and tuning."""

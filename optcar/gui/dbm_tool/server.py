@@ -1,7 +1,4 @@
-"""WheeledLab manual DBM estimator, adapted to the OptCar bin reader and model.
-
-Original: wheeledlab_utils/dbm_estimator/server.py.
-"""
+"""Manual DBM calibration with raw-bin browsing, rollouts and reference trajectories."""
 from __future__ import annotations
 
 import argparse
@@ -15,7 +12,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 import numpy as np
-from flask import Blueprint, current_app, jsonify, render_template, request
+from flask import Blueprint, jsonify, render_template, request
 
 
 from optcar.datagen.raw_bins import body_frame_window, find_dataset_root, scan_bins, load_session, read_dt, yaw_from_quat
@@ -200,24 +197,6 @@ def _coerce_trajectory_param(value: Any, kind: str) -> Any:
     return None if text == "" else text
 
 
-def _coerce_bool(value: Any, default: bool = True) -> bool:
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    return str(value).strip().lower() not in {"0", "false", "no", "off"}
-
-
-def _coerce_positive_float(value: Any, default: float = 2.0) -> float:
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        return default
-    if not np.isfinite(parsed) or parsed <= 0:
-        return default
-    return float(parsed)
-
-
 def _available_trajectory_classes():
     module = _trajectory_module()
     base = module.BaseTrajectory
@@ -365,24 +344,10 @@ def _sample_pose_xy(data: dict, start_idx: int, end_idx: int, max_points: int) -
     }
 
 
-def _default_aggregate_config_path() -> Path:
-    return Path(current_app.config["DBM_CONFIG_ROOT"]) / "aggregate_segments.json"
-
-
-def _aggregate_config_path(path_value: str | None) -> Path:
-    if path_value and str(path_value).strip():
-        path = Path(str(path_value).strip()).expanduser()
-    else:
-        path = _default_aggregate_config_path()
-    if not path.is_absolute():
-        path = Path.cwd() / path
-    return path.resolve()
-
-
 @app.route("/")
 def index():
     return render_template("dbm_tool/index.html", initial_path=request.args.get("folder") or request.args.get("path", ""),
-                           config_path=_default_aggregate_config_path(), params=asdict(DBMParams()))
+                           params=asdict(DBMParams()))
 
 
 @app.route("/api/inspect", methods=["POST"])
@@ -540,93 +505,6 @@ def api_load_segment():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     return jsonify(segment)
-
-
-@app.route("/api/aggregate_segments", methods=["POST"])
-def api_aggregate_segments():
-    p = request.get_json(force=True)
-    segments_in = p.get("segments")
-    if segments_in is not None:
-        requests = [
-            {
-                "yaml_path": str(item.get("yaml_path", "")).strip(),
-                "legend": str(item.get("legend", "")).strip(),
-                "color": str(item.get("color", "")).strip(),
-                "visible": _coerce_bool(item.get("visible"), True),
-                "line_width": max(0.1, _coerce_positive_float(item.get("line_width"), 2.0)),
-            }
-            for item in segments_in
-            if str(item.get("yaml_path", "")).strip()
-        ]
-    else:
-        paths_in = p.get("yaml_paths", [])
-        if isinstance(paths_in, str):
-            yaml_paths = [line.strip() for line in paths_in.splitlines() if line.strip()]
-        else:
-            yaml_paths = [str(path).strip() for path in paths_in if str(path).strip()]
-        requests = [{"yaml_path": path, "legend": "", "visible": True, "line_width": 2} for path in yaml_paths]
-    max_points = int(p.get("max_points", 4000))
-
-    segments = []
-    errors = []
-    for request_item in requests:
-        yaml_path = request_item["yaml_path"]
-        try:
-            segment = _segment_from_yaml(Path(yaml_path))
-            data = load_session(segment["bin_path"])
-            sampled = _sample_pose_xy(
-                data,
-                segment["start_idx"],
-                segment["end_idx"],
-                max_points=max_points,
-            )
-            segments.append({
-                **segment,
-                **sampled,
-                "name": request_item["legend"] or Path(segment["bin_path"]).stem,
-                "color": request_item.get("color", ""),
-                "visible": request_item.get("visible", True),
-                "line_width": request_item.get("line_width", 2),
-            })
-        except Exception as e:
-            errors.append({"yaml_path": yaml_path, "error": str(e)})
-
-    return jsonify({"segments": segments, "errors": errors})
-
-
-@app.route("/api/save_aggregate_config", methods=["POST"])
-def api_save_aggregate_config():
-    payload = request.get_json(force=True)
-    config_path = _aggregate_config_path(payload.get("config_path"))
-    config = {
-        "segments": payload.get("segments", []),
-        "reference": payload.get("reference", None),
-        "limits": payload.get("limits", {}),
-        "display": payload.get("display", {}),
-    }
-    try:
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(json.dumps(config, indent=2))
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-    return jsonify({"config_path": str(config_path), **config})
-
-
-@app.route("/api/load_aggregate_config", methods=["POST"])
-def api_load_aggregate_config():
-    payload = request.get_json(force=True)
-    config_path = _aggregate_config_path(payload.get("config_path"))
-    try:
-        config = json.loads(config_path.read_text())
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-    return jsonify({
-        "config_path": str(config_path),
-        "segments": config.get("segments", []),
-        "reference": config.get("reference", None),
-        "limits": config.get("limits", {}),
-        "display": config.get("display", {}),
-    })
 
 
 @app.route("/api/trajectory", methods=["POST"])

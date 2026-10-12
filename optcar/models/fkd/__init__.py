@@ -1,4 +1,4 @@
-"""WheeledLab FKD model and training definitions with OptCar-local imports."""
+"""FKD model and training definitions with OptCar-local imports."""
 from .config import (
     FKD_model_config,
     TransformerModelConfig,
