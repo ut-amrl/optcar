@@ -2,7 +2,13 @@
 
 Prepare vehicle datasets, calibrate a dynamic bicycle model (DBM), and train FKD delta-prediction transformers.
 
-**Rwik Rana** · [rwikrana@gmail.com](mailto:rwikrana@gmail.com) · [Paper](https://arxiv.org/abs/2607.13319)
+**Rwik Rana** · [rwikrana@gmail.com](mailto:rwikrana@gmail.com)
+
+[![Paper](https://img.shields.io/badge/Paper-333333?style=for-the-badge)](https://arxiv.org/abs/2607.13319)
+[![Website](https://img.shields.io/badge/Website-333333?style=for-the-badge)](https://amrl.cs.utexas.edu/optcar/)
+
+<p align="center"><img src="assets/images/optcar_title.png" alt="OptCar across mixed terrain" width="100%" /></p>
+<p align="center"><img src="assets/images/optcar_method.png" alt="Model architecture and fine-tuning" width="100%" /></p>
 
 ## Quick start
 
@@ -56,7 +62,7 @@ tensorboard --logdir checkpoints/corl26_delta/lightning_logs
 
 Open **http://127.0.0.1:6006** for metrics and validation plots. Checkpoints and copies of all three configs are saved in `checkpoints/corl26_delta/`. For WandB, run `wandb login` and add `--wandb` to the training command.
 
-## Reference
+## Configuration and data details
 
 <details>
 <summary>Configs, training and fine-tuning</summary>
@@ -117,15 +123,6 @@ Domain randomization supports uniform and normal ranges. Vehicle parameters are 
 Generation/build jobs each use one selected device; multiple jobs can use different GPUs. GPU indices follow PyTorch's visible ordering. Bag decoding uses CPU. The single `requirements.txt` installs Torch 2.11.0 with CUDA 12.8 and supports CPU execution. Rerun setup to update dependencies, then restart the GUI.
 
 Use `python3 optcar_gui.py --help` and `python3 optcar/train.py --help` for more options. Third-party attribution is in [`THIRD_PARTY_NOTICES`](THIRD_PARTY_NOTICES).
-
-</details>
-
-<details>
-<summary>Method diagrams</summary>
-
-![OptCar across mixed terrain](assets/images/optcar_title.png)
-
-![Model architecture and fine-tuning](assets/images/optcar_method.png)
 
 </details>
 
